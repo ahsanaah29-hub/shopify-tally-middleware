@@ -33,3 +33,17 @@ async def shopify_order(request: Request):
     save_order(data)
 
     return {"status": "ok"}
+
+from fastapi.responses import JSONResponse
+
+@app.get("/tally/orders")
+async def get_orders_for_tally():
+    if not os.path.exists(ORDERS_FILE):
+        return JSONResponse(content=[], status_code=200)
+
+    with open(ORDERS_FILE, "r") as f:
+        orders = json.load(f)
+
+    return JSONResponse(content=orders, status_code=200)
+
+
