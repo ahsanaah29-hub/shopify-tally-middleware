@@ -9,9 +9,9 @@ app = FastAPI()
 # -------------------------------------------------
 # Environment variables (Render / Local)
 # -------------------------------------------------
-SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME")  # example: my-store-name
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN")
-SHOPIFY_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
+SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME", "").strip()
+SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "").strip()
 
 # -------------------------------------------------
 # Local storage (temporary)
@@ -151,3 +151,4 @@ async def tally_sales(request: Request):
         "received_items_count": len(data["items"]),
         "shopify_order_id": shopify_response["order"]["id"]
     }
+
