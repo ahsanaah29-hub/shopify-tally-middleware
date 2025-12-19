@@ -53,8 +53,49 @@ async def shopify_order(request: Request):
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
-    orders = load_orders()
-    return JSONResponse(content=orders, status_code=200)
+    raw_orders = load_orders()
+
+    transformed_orders = []
+
+    for order in raw_orders:
+        transformed_orders.append({
+            "voucher_type": "Sales",
+            "voucher_number": str(order.get("order_number")),
+            "voucher_date": order.get("created_at", "")[:10],
+
+            "customer": {
+                "name": f"{order.get('customer', {}).get('first_name', '')} "
+                        f"{order.get('customer', {}).get('last_name', '')}".strip(),
+                "email": order.get("email"),
+                "phone": order.get("phone")
+            },
+
+            "items": [
+                {
+                    "item_name": item.get("name"),
+                    "quantity": item.get("quantity"),
+                    "rate": float(item.get("price")),
+                    "amount": float(item.get("price")) * item.get("quantity")
+                }
+                for item in order.get("line_items", [])
+            ],
+
+            "tax": {
+                "type": "IGST",   # can be improved later
+                "amount": float(order.get("total_tax", 0))
+            },
+
+            "total_amount": float(order.get("total_price")),
+            "currency": order.get("currency"),
+            "source": "Shopify",
+            "shopify_order_id": order.get("id")
+        })
+
+    return JSONResponse(
+        content={"orders": transformed_orders},
+        status_code=200
+    )
+
 
 
 # -------------------------------------------------
@@ -151,5 +192,6 @@ async def tally_sales(request: Request):
         "received_items_count": len(data["items"]),
         "shopify_order_id": shopify_response["order"]["id"]
     }
+
 
 
