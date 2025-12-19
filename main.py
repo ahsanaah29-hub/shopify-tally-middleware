@@ -69,7 +69,7 @@ def create_shopify_order(tally_data: dict):
 
     url = (
         f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_VERSION}/orders.json"
+        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
     )
 
     headers = {
@@ -151,4 +151,5 @@ async def tally_sales(request: Request):
         "received_items_count": len(data["items"]),
         "shopify_order_id": shopify_response["order"]["id"]
     }
+
 
