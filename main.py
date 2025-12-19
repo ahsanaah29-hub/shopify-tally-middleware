@@ -53,48 +53,64 @@ async def shopify_order(request: Request):
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
-    raw_orders = load_orders()
+    try:
+        raw_orders = load_orders()
+        tally_orders = []
 
-    transformed_orders = []
+        for order in raw_orders:
+            # --- Safe total price extraction ---
+            total_price = (
+                order.get("total_price")
+                or order.get("current_total_price")
+                or 0
+            )
 
-    for order in raw_orders:
-        transformed_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
+            # --- Customer mapping ---
+            customer = order.get("customer") or {}
 
-            "customer": {
-                "name": f"{order.get('customer', {}).get('first_name', '')} "
-                        f"{order.get('customer', {}).get('last_name', '')}".strip(),
-                "email": order.get("email"),
-                "phone": order.get("phone")
-            },
+            # --- Line items mapping ---
+            items = []
+            for li in order.get("line_items", []):
+                qty = li.get("quantity", 0)
+                price = float(li.get("price", 0))
 
-            "items": [
-                {
-                    "item_name": item.get("name"),
-                    "quantity": item.get("quantity"),
-                    "rate": float(item.get("price")),
-                    "amount": float(item.get("price")) * item.get("quantity")
-                }
-                for item in order.get("line_items", [])
-            ],
+                items.append({
+                    "item_name": li.get("title"),
+                    "quantity": qty,
+                    "rate": price,
+                    "amount": qty * price
+                })
 
-            "tax": {
-                "type": "IGST",   # can be improved later
-                "amount": float(order.get("total_tax", 0))
-            },
+            tally_orders.append({
+                "voucher_type": "Sales",
+                "voucher_number": str(order.get("order_number")),
+                "voucher_date": order.get("created_at", "")[:10],
+                "customer": {
+                    "name": customer.get("first_name", "") + " " + customer.get("last_name", ""),
+                    "email": customer.get("email"),
+                    "phone": customer.get("phone")
+                },
+                "items": items,
+                "tax": {
+                    "type": "GST",
+                    "amount": float(order.get("total_tax", 0))
+                },
+                "total_amount": float(total_price),
+                "currency": order.get("currency"),
+                "source": "Shopify",
+                "shopify_order_id": order.get("id")
+            })
 
-            "total_amount": float(order.get("total_price")),
-            "currency": order.get("currency"),
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
+        # ✅ MAINSTREAM ARRAY WRAPPING
+        return JSONResponse(
+            content={"orders": tally_orders},
+            status_code=200
+        )
 
-    return JSONResponse(
-        content={"orders": transformed_orders},
-        status_code=200
-    )
+    except Exception as e:
+        print("❌ Error building Tally orders:", str(e))
+        raise HTTPException(status_code=500, detail="Failed to build Tally orders")
+
 
 
 
@@ -192,6 +208,7 @@ async def tally_sales(request: Request):
         "received_items_count": len(data["items"]),
         "shopify_order_id": shopify_response["order"]["id"]
     }
+
 
 
 
