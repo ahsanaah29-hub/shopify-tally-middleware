@@ -49,7 +49,7 @@ async def shopify_order(request: Request):
 
 
 # -------------------------------------------------
-# Tally → Fetch Shopify Orders
+# Tally → Fetch Stored Shopify Orders
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
@@ -108,17 +108,12 @@ async def get_orders_for_tally():
         raise HTTPException(status_code=500, detail="Failed to build Tally orders")
 
 
-
-
 # -------------------------------------------------
 # Helper: Push Order to Shopify
 # -------------------------------------------------
 def create_shopify_order(tally_data: dict):
     if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="Shopify configuration missing"
-        )
+        raise HTTPException(status_code=500, detail="Shopify configuration missing")
 
     url = (
         f"https://{SHOPIFY_STORE}.myshopify.com/"
@@ -150,10 +145,7 @@ def create_shopify_order(tally_data: dict):
     response = requests.post(url, headers=headers, json=payload)
 
     if response.status_code not in (200, 201):
-        raise HTTPException(
-            status_code=500,
-            detail=f"Shopify error: {response.text}"
-        )
+        raise HTTPException(status_code=500, detail=f"Shopify error: {response.text}")
 
     return response.json()
 
@@ -171,7 +163,6 @@ async def tally_sales(request: Request):
     print("📥 Received Tally Sales Voucher:")
     print(json.dumps(data, indent=2))
 
-    # Required fields validation
     required_fields = [
         "voucher_type",
         "voucher_number",
@@ -183,19 +174,11 @@ async def tally_sales(request: Request):
 
     for field in required_fields:
         if field not in data:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Missing required field: {field}"
-            )
+            raise HTTPException(status_code=400, detail=f"Missing required field: {field}")
 
-    # Validate items
     if not isinstance(data["items"], list) or len(data["items"]) == 0:
-        raise HTTPException(
-            status_code=400,
-            detail="items must be a non-empty list"
-        )
+        raise HTTPException(status_code=400, detail="items must be a non-empty list")
 
-    # Push to Shopify
     shopify_response = create_shopify_order(data)
 
     return {
@@ -206,6 +189,85 @@ async def tally_sales(request: Request):
     }
 
 
+# =================================================
+# 🆕 NEW FEATURE: Shopify → Tally (Date Range)
+# =================================================
+def fetch_shopify_orders_by_date(from_date: str, to_date: str):
+    if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
+        raise HTTPException(status_code=500, detail="Shopify configuration missing")
+
+    url = (
+        f"https://{SHOPIFY_STORE}.myshopify.com/"
+        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    )
+
+    params = {
+        "status": "any",
+        "created_at_min": f"{from_date}T00:00:00Z",
+        "created_at_max": f"{to_date}T23:59:59Z",
+        "limit": 250
+    }
+
+    headers = {
+        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+        "Content-Type": "application/json"
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Shopify error: {response.text}")
+
+    return response.json().get("orders", [])
 
 
+@app.get("/tally/orders/shopify")
+async def get_shopify_orders_by_date(from_date: str, to_date: str):
+    try:
+        shopify_orders = fetch_shopify_orders_by_date(from_date, to_date)
+        tally_orders = []
 
+        for order in shopify_orders:
+            customer = order.get("customer") or {}
+
+            first_name = customer.get("first_name") or ""
+            last_name = customer.get("last_name") or ""
+            customer_name = (first_name + " " + last_name).strip() or "Unknown Customer"
+
+            items = []
+            for li in order.get("line_items", []):
+                qty = li.get("quantity") or 0
+                rate = float(li.get("price") or 0)
+
+                items.append({
+                    "item_name": li.get("title"),
+                    "quantity": qty,
+                    "rate": rate,
+                    "amount": qty * rate
+                })
+
+            tally_orders.append({
+                "voucher_type": "Sales",
+                "voucher_number": str(order.get("order_number")),
+                "voucher_date": order.get("created_at", "")[:10],
+                "customer": {
+                    "name": customer_name,
+                    "email": customer.get("email"),
+                    "phone": customer.get("phone")
+                },
+                "items": items,
+                "tax": {
+                    "type": "GST",
+                    "amount": 0.0
+                },
+                "total_amount": float(order.get("total_price") or 0),
+                "currency": order.get("currency"),
+                "source": "Shopify",
+                "shopify_order_id": order.get("id")
+            })
+
+        return {"orders": tally_orders}
+
+    except Exception as e:
+        print("❌ Date range fetch error:", str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch Shopify orders by date range")
