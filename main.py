@@ -54,58 +54,54 @@ async def shopify_order(request: Request):
 @app.get("/tally/orders")
 async def get_orders_for_tally():
     try:
-        raw_orders = load_orders()
+        orders = load_orders()
         tally_orders = []
 
-        for order in raw_orders:
-            # --- Safe total price extraction ---
-            total_price = (
-                order.get("total_price")
-                or order.get("current_total_price")
-                or 0
-            )
-
-            # --- Customer mapping ---
+        for order in orders:
             customer = order.get("customer") or {}
 
-            # --- Line items mapping ---
+            first_name = customer.get("first_name") or ""
+            last_name = customer.get("last_name") or ""
+            customer_name = (first_name + " " + last_name).strip() or "Unknown Customer"
+
+            email = customer.get("email")
+            phone = customer.get("phone")
+
             items = []
             for li in order.get("line_items", []):
-                qty = li.get("quantity", 0)
-                price = float(li.get("price", 0))
+                qty = li.get("quantity") or 0
+                rate = float(li.get("price") or 0)
 
                 items.append({
                     "item_name": li.get("title"),
                     "quantity": qty,
-                    "rate": price,
-                    "amount": qty * price
+                    "rate": rate,
+                    "amount": qty * rate
                 })
+
+            total_amount = float(order.get("total_price") or 0)
 
             tally_orders.append({
                 "voucher_type": "Sales",
                 "voucher_number": str(order.get("order_number")),
                 "voucher_date": order.get("created_at", "")[:10],
                 "customer": {
-                    "name": customer.get("first_name", "") + " " + customer.get("last_name", ""),
-                    "email": customer.get("email"),
-                    "phone": customer.get("phone")
+                    "name": customer_name,
+                    "email": email,
+                    "phone": phone
                 },
                 "items": items,
                 "tax": {
                     "type": "GST",
-                    "amount": float(order.get("total_tax", 0))
+                    "amount": 0.0
                 },
-                "total_amount": float(total_price),
+                "total_amount": total_amount,
                 "currency": order.get("currency"),
                 "source": "Shopify",
                 "shopify_order_id": order.get("id")
             })
 
-        # ✅ MAINSTREAM ARRAY WRAPPING
-        return JSONResponse(
-            content={"orders": tally_orders},
-            status_code=200
-        )
+        return {"orders": tally_orders}
 
     except Exception as e:
         print("❌ Error building Tally orders:", str(e))
@@ -208,6 +204,7 @@ async def tally_sales(request: Request):
         "received_items_count": len(data["items"]),
         "shopify_order_id": shopify_response["order"]["id"]
     }
+
 
 
 
