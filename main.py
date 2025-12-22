@@ -59,55 +59,66 @@ def calculate_gst(amount_inr: float):
 
 
 # -------------------------------------------------
-# Tally → Fetch Stored Shopify Orders (INR + GST)
+# Core logic reused by GET & POST
+# -------------------------------------------------
+def build_tally_orders():
+    orders = load_orders()
+    tally_orders = []
+
+    for order in orders:
+        customer = order.get("customer") or {}
+        name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip() or "Unknown"
+
+        items = []
+        for li in order.get("line_items", []):
+            qty = li.get("quantity") or 0
+            rate_usd = float(li.get("price") or 0)
+            rate_inr = round(rate_usd * USD_TO_INR_RATE, 2)
+            amount = round(qty * rate_inr, 2)
+
+            items.append({
+                "item_name": li.get("title"),
+                "quantity": qty,
+                "rate": rate_inr,
+                "amount": amount,
+                "gst": calculate_gst(amount)
+            })
+
+        total_inr = round(float(order.get("total_price") or 0) * USD_TO_INR_RATE, 2)
+
+        tally_orders.append({
+            "voucher_type": "Sales",
+            "voucher_number": str(order.get("order_number")),
+            "voucher_date": order.get("created_at", "")[:10],
+            "customer": {
+                "name": name,
+                "email": customer.get("email"),
+                "phone": customer.get("phone")
+            },
+            "items": items,
+            "total_amount": total_inr,
+            "currency": "INR",
+            "source": "Shopify",
+            "shopify_order_id": order.get("id")
+        })
+
+    return {"orders": tally_orders}
+
+
+# -------------------------------------------------
+# Tally → Fetch Orders (GET)
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
-    try:
-        orders = load_orders()
-        tally_orders = []
+    return build_tally_orders()
 
-        for order in orders:
-            customer = order.get("customer") or {}
-            name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip() or "Unknown"
 
-            items = []
-            for li in order.get("line_items", []):
-                qty = li.get("quantity") or 0
-                rate_usd = float(li.get("price") or 0)
-                rate_inr = round(rate_usd * USD_TO_INR_RATE, 2)
-                amount = round(qty * rate_inr, 2)
-
-                items.append({
-                    "item_name": li.get("title"),
-                    "quantity": qty,
-                    "rate": rate_inr,
-                    "amount": amount,
-                    "gst": calculate_gst(amount)
-                })
-
-            total_inr = round(float(order.get("total_price") or 0) * USD_TO_INR_RATE, 2)
-
-            tally_orders.append({
-                "voucher_type": "Sales",
-                "voucher_number": str(order.get("order_number")),
-                "voucher_date": order.get("created_at", "")[:10],
-                "customer": {
-                    "name": name,
-                    "email": customer.get("email"),
-                    "phone": customer.get("phone")
-                },
-                "items": items,
-                "total_amount": total_inr,
-                "currency": "INR",
-                "source": "Shopify",
-                "shopify_order_id": order.get("id")
-            })
-
-        return {"orders": tally_orders}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# -------------------------------------------------
+# ✅ Tally → Fetch Orders (POST)  ← FIX FOR TDL
+# -------------------------------------------------
+@app.post("/tally/orders")
+async def get_orders_for_tally_post():
+    return build_tally_orders()
 
 
 # -------------------------------------------------
