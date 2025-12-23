@@ -1,6 +1,5 @@
 import os
 import requests
-from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException
 from supabase import create_client
 
@@ -65,23 +64,24 @@ async def shopify_order(request: Request):
         or shipping.get("phone")
     )
 
-    # ---- Insert Order (idempotent) ----
-    res = supabase.table("orders").upsert({
-        "shopify_order_id": order.get("id"),
-        "order_number": str(order.get("order_number")),
-        "voucher_date": order.get("created_at")[:10],
-        "customer_name": customer_name,
-        "customer_email": customer_email,
-        "customer_phone": customer_phone,
-        "total_amount": float(order.get("total_price", 0)) * USD_TO_INR_RATE,
-        "currency": "INR",
-        "source": "Shopify",
-        "raw_order": order
-    }, on_conflict="shopify_order_id").execute()
+    res = supabase.table("orders").upsert(
+        {
+            "shopify_order_id": order.get("id"),
+            "order_number": str(order.get("order_number")),
+            "voucher_date": order.get("created_at")[:10],
+            "customer_name": customer_name,
+            "customer_email": customer_email,
+            "customer_phone": customer_phone,
+            "total_amount": float(order.get("total_price", 0)) * USD_TO_INR_RATE,
+            "currency": "INR",
+            "source": "Shopify",
+            "raw_order": order
+        },
+        on_conflict="shopify_order_id"
+    ).execute()
 
     order_id = res.data[0]["id"]
 
-    # ---- Replace Items ----
     supabase.table("order_items") \
         .delete() \
         .eq("order_id", order_id) \
@@ -107,11 +107,12 @@ async def shopify_order(request: Request):
     return {"status": "stored"}
 
 # -------------------------------------------------
-# Tally → Fetch Orders (DATE RANGE → Supabase)
+# Tally → Fetch Orders
 # -------------------------------------------------
 @app.post("/tally/orders")
 async def tally_orders_post(request: Request):
     body = await request.json()
+
     from_date = body.get("from_date")
     to_date = body.get("to_date")
 
@@ -137,17 +138,20 @@ async def tally_orders_post(request: Request):
                 "email": o["customer_email"],
                 "phone": o["customer_phone"]
             },
-            "items": [{
-                "item_name": i["item_name"],
-                "quantity": i["quantity"],
-                "rate": i["rate"],
-                "amount": i["amount"],
-                "gst": {
-                    "cgst": i["cgst"],
-                    "sgst": i["sgst"],
-                    "igst": i["igst"]
+            "items": [
+                {
+                    "item_name": i["item_name"],
+                    "quantity": i["quantity"],
+                    "rate": i["rate"],
+                    "amount": i["amount"],
+                    "gst": {
+                        "cgst": i["cgst"],
+                        "sgst": i["sgst"],
+                        "igst": i["igst"]
+                    }
                 }
-            } for i in o["order_items"]],
+                for i in o["order_items"]
+            ],
             "total_amount": o["total_amount"],
             "currency": o["currency"],
             "source": o["source"],
@@ -174,17 +178,15 @@ async def tally_sales(request: Request):
     }
 
     line_items = []
-for item in data["items"]:
-    product_name = item.get("product_name") or item.get("item_name")
+    for item in data.get("items", []):
+        product_name = item.get("product_name") or item.get("item_name")
+        price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
 
-    price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
-
-    line_items.append({
-        "title": product_name,
-        "quantity": item["quantity"],
-        "price": price_usd
-    })
-
+        line_items.append({
+            "title": product_name,
+            "quantity": item["quantity"],
+            "price": price_usd
+        })
 
     payload = {
         "order": {
@@ -195,12 +197,11 @@ for item in data["items"]:
     }
 
     response = requests.post(url, headers=headers, json=payload)
+
     if response.status_code not in (200, 201):
-        raise HTTPException(500, response.text)
+        raise HTTPException(status_code=500, detail=response.text)
 
     return {
         "status": "success",
         "shopify_order_id": response.json()["order"]["id"]
     }
-
-
