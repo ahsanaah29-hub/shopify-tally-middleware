@@ -108,7 +108,7 @@ def build_tally_orders():
 
 
 # -------------------------------------------------
-# Tally → Fetch Orders (GET)  [Postman / Browser]
+# Tally → Fetch Orders (GET)
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
@@ -116,7 +116,7 @@ async def get_orders_for_tally():
 
 
 # -------------------------------------------------
-# ✅ Tally → Fetch Orders (POST)  [TDL FIX]
+# ✅ Tally → Fetch Orders (POST) [TDL FIX]
 # -------------------------------------------------
 @app.post("/tally/orders")
 async def get_orders_for_tally_post():
@@ -183,10 +183,9 @@ async def tally_sales(request: Request):
 
 
 # -------------------------------------------------
-# Shopify → Tally (Date Range, GET)
+# Core logic: Shopify → Tally (Date Range)
 # -------------------------------------------------
-@app.get("/tally/orders/shopify")
-async def get_shopify_orders_by_date(from_date: str, to_date: str):
+def build_shopify_orders_by_date(from_date: str, to_date: str):
     if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
         raise HTTPException(status_code=500, detail="Shopify configuration missing")
 
@@ -242,3 +241,30 @@ async def get_shopify_orders_by_date(from_date: str, to_date: str):
         })
 
     return {"orders": tally_orders}
+
+
+# -------------------------------------------------
+# Shopify → Tally (GET)
+# -------------------------------------------------
+@app.get("/tally/orders/shopify")
+async def get_shopify_orders_by_date(from_date: str, to_date: str):
+    return build_shopify_orders_by_date(from_date, to_date)
+
+
+# -------------------------------------------------
+# ✅ Shopify → Tally (POST) [TDL FIX]
+# -------------------------------------------------
+@app.post("/tally/orders/shopify")
+async def get_shopify_orders_by_date_post(request: Request):
+    body = await request.json()
+
+    from_date = body.get("from_date")
+    to_date = body.get("to_date")
+
+    if not from_date or not to_date:
+        raise HTTPException(
+            status_code=400,
+            detail="from_date and to_date are required"
+        )
+
+    return build_shopify_orders_by_date(from_date, to_date)
