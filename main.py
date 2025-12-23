@@ -146,45 +146,42 @@ def fetch_orders_graphql(from_date: str, to_date: str):
     _, to_utc = ist_date_to_utc_range(to_date)
 
     query = """
-    query ($query: String!) {
-      orders(first: 250, query: $query) {
-        edges {
-          node {
-            id
-            name
-            displayName
-            createdAt
-            email
-            totalPriceSet {
-              shopMoney {
-                amount
-              }
-            }
-            customer {
-              displayName
-              email
-              phone
-            }
-            shippingAddress {
-              firstName
-              lastName
-              phone
-            }
-            billingAddress {
-              firstName
-              lastName
-              phone
-            }
-            lineItems(first: 50) {
-              edges {
-                node {
-                  title
-                  quantity
-                  originalUnitPriceSet {
-                    shopMoney {
-                      amount
-                    }
-                  }
+query ($query: String!) {
+  orders(first: 250, query: $query) {
+    edges {
+      node {
+        id
+        name
+        createdAt
+        email
+        totalPriceSet {
+          shopMoney {
+            amount
+          }
+        }
+        customer {
+          displayName
+          email
+          phone
+        }
+        shippingAddress {
+          firstName
+          lastName
+          phone
+        }
+        billingAddress {
+          firstName
+          lastName
+          phone
+        }
+        lineItems(first: 50) {
+          edges {
+            node {
+              title
+              quantity
+              originalUnitPriceSet {
+                shopMoney {
+                  amount
                 }
               }
             }
@@ -192,7 +189,11 @@ def fetch_orders_graphql(from_date: str, to_date: str):
         }
       }
     }
-    """
+  }
+}
+"""
+
+
 
     search = f"created_at:>={from_utc} created_at:<={to_utc}"
     data = shopify_graphql(query, {"query": search})
@@ -203,21 +204,38 @@ def fetch_orders_graphql(from_date: str, to_date: str):
 # GRAPHQL CUSTOMER EXTRACTION (ADMIN-ACCURATE)
 # -------------------------------------------------
 def extract_customer_graphql(order: dict):
-    name = (
-        order.get("displayName")
-        or (order.get("customer") or {}).get("displayName")
-        or "Cash Customer"
-    )
+    customer = order.get("customer") or {}
+    shipping = order.get("shippingAddress") or {}
+    billing = order.get("billingAddress") or {}
 
+    # 1️⃣ Customer object (BEST)
+    name = customer.get("displayName")
+
+    # 2️⃣ Shipping name
+    if not name and shipping:
+        name = f"{shipping.get('firstName','')} {shipping.get('lastName','')}".strip()
+
+    # 3️⃣ Billing name
+    if not name and billing:
+        name = f"{billing.get('firstName','')} {billing.get('lastName','')}".strip()
+
+    # 4️⃣ Email fallback
     email = (
-        (order.get("customer") or {}).get("email")
+        customer.get("email")
         or order.get("email")
     )
 
+    if not name and email:
+        name = email
+
+    # 5️⃣ Final fallback
+    if not name:
+        name = "Cash Customer"
+
     phone = (
-        (order.get("customer") or {}).get("phone")
-        or (order.get("billingAddress") or {}).get("phone")
-        or (order.get("shippingAddress") or {}).get("phone")
+        customer.get("phone")
+        or shipping.get("phone")
+        or billing.get("phone")
     )
 
     return {
@@ -226,9 +244,6 @@ def extract_customer_graphql(order: dict):
         "phone": phone
     }
 
-
-# -------------------------------------------------
-# GRAPHQL → TALLY
 # -------------------------------------------------
 @app.post("/tally/orders/shopify/graphql")
 async def get_shopify_orders_graphql(request: Request):
@@ -276,3 +291,4 @@ async def get_shopify_orders_graphql(request: Request):
         })
 
     return {"orders": tally_orders}
+
