@@ -78,7 +78,51 @@ def ist_date_to_utc_range(date_str: str):
 
 
 # -------------------------------------------------
-# Tally → Fetch Webhook Orders (POST only)
+# CUSTOMER EXTRACTION (SINGLE SOURCE OF TRUTH)
+# -------------------------------------------------
+def extract_customer(order: dict):
+    customer = order.get("customer") or {}
+    billing = order.get("billing_address") or {}
+    shipping = order.get("shipping_address") or {}
+
+    customer_name = "Unknown Customer"
+    customer_email = order.get("email")
+    customer_phone = None
+
+    # 1️⃣ Billing address (highest priority)
+    billing_name = f"{billing.get('first_name','')} {billing.get('last_name','')}".strip()
+    if billing_name:
+        customer_name = billing_name
+        customer_phone = billing.get("phone")
+
+    # 2️⃣ Shipping address
+    elif shipping:
+        shipping_name = f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip()
+        if shipping_name:
+            customer_name = shipping_name
+            customer_phone = shipping.get("phone")
+
+    # 3️⃣ Customer object (least reliable)
+    elif customer:
+        customer_name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip() or customer_name
+        customer_phone = customer.get("phone")
+
+    # 4️⃣ Email fallback
+    customer_email = (
+        customer.get("email")
+        or order.get("email")
+        or customer_email
+    )
+
+    return {
+        "name": customer_name,
+        "email": customer_email,
+        "phone": customer_phone
+    }
+
+
+# -------------------------------------------------
+# Tally → Fetch Webhook Orders
 # -------------------------------------------------
 @app.post("/tally/orders")
 async def tally_orders_post():
@@ -86,11 +130,7 @@ async def tally_orders_post():
     tally_orders = []
 
     for order in orders:
-        customer = order.get("customer") or {}
-
-        customer_name = (
-            f"{customer.get('first_name','')} {customer.get('last_name','')}"
-        ).strip() or "Unknown Customer"
+        customer_data = extract_customer(order)
 
         items = []
         for li in order.get("line_items", []):
@@ -110,11 +150,7 @@ async def tally_orders_post():
             "voucher_type": "Sales",
             "voucher_number": str(order.get("order_number")),
             "voucher_date": order.get("created_at", "")[:10],
-            "customer": {
-                "name": customer_name,
-                "email": customer.get("email"),
-                "phone": customer.get("phone")
-            },
+            "customer": customer_data,
             "items": items,
             "total_amount": round(
                 float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
@@ -128,7 +164,7 @@ async def tally_orders_post():
 
 
 # -------------------------------------------------
-# Shopify → Tally (DATE RANGE, CUSTOMER FIXED)
+# Shopify → Tally (DATE RANGE)
 # -------------------------------------------------
 def build_shopify_orders_by_date(from_date: str, to_date: str):
     if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
@@ -162,43 +198,8 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
     tally_orders = []
 
     for order in orders:
-        customer = order.get("customer") or {}
-        billing = order.get("billing_address") or {}
-        shipping = order.get("shipping_address") or {}
+        customer_data = extract_customer(order)
 
-        # -------- CORRECT CUSTOMER PRIORITY --------
-        customer_name = "Unknown Customer"
-        customer_email = order.get("email")
-        customer_phone = None
-
-        billing_name = (
-            f"{billing.get('first_name','')} {billing.get('last_name','')}"
-        ).strip()
-        if billing_name:
-            customer_name = billing_name
-            customer_phone = billing.get("phone")
-
-        else:
-            shipping_name = (
-                f"{shipping.get('first_name','')} {shipping.get('last_name','')}"
-            ).strip()
-            if shipping_name:
-                customer_name = shipping_name
-                customer_phone = shipping.get("phone")
-
-            else:
-                customer_name = (
-                    f"{customer.get('first_name','')} {customer.get('last_name','')}"
-                ).strip() or customer_name
-                customer_phone = customer.get("phone")
-
-        customer_email = (
-            customer.get("email")
-            or billing.get("email")
-            or customer_email
-        )
-
-        # -------- ITEMS --------
         items = []
         for li in order.get("line_items", []):
             qty = li.get("quantity", 0)
@@ -217,11 +218,7 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
             "voucher_type": "Sales",
             "voucher_number": str(order.get("order_number")),
             "voucher_date": order.get("created_at", "")[:10],
-            "customer": {
-                "name": customer_name,
-                "email": customer_email,
-                "phone": customer_phone
-            },
+            "customer": customer_data,
             "items": items,
             "total_amount": round(
                 float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
