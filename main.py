@@ -1,295 +1,130 @@
-import json
-import os
+from fastapi import FastAPI, HTTPException, Request
 import requests
-from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Request, HTTPException
+from datetime import datetime
+import os
 
 app = FastAPI()
 
-# -------------------------------------------------
-# Environment variables
-# -------------------------------------------------
-SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
-SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME", "").strip()
-SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01").strip()
+# =========================
+# CONFIG
+# =========================
+SHOPIFY_STORE = os.getenv("SHOPIFY_STORE")
+SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
+SHOPIFY_API_VERSION = "2025-10"
 
-USD_TO_INR_RATE = float(os.getenv("USD_TO_INR_RATE", "83.0"))
-GST_PERCENT = float(os.getenv("GST_PERCENT", "18.0"))
-
-# -------------------------------------------------
-# Local storage (Webhook orders)
-# -------------------------------------------------
-ORDERS_FILE = "orders.json"
+HEADERS = {
+    "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+    "Content-Type": "application/json"
+}
 
 
-def load_orders():
-    if os.path.exists(ORDERS_FILE):
-        with open(ORDERS_FILE, "r") as f:
-            return json.load(f)
-    return []
+# =========================
+# HELPERS
+# =========================
+def parse_date(date_str: str) -> str:
+    return datetime.strptime(date_str, "%Y-%m-%d").isoformat()
 
 
-def save_orders(orders):
-    with open(ORDERS_FILE, "w") as f:
-        json.dump(orders, f, indent=2)
+def fetch_customer(customer_id: int):
+    if not customer_id:
+        return {
+            "name": "Unknown Customer",
+            "email": None,
+            "phone": None
+        }
 
+    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/customers/{customer_id}.json"
+    resp = requests.get(url, headers=HEADERS)
 
-# -------------------------------------------------
-# Shopify → Middleware (Webhook)
-# -------------------------------------------------
-@app.post("/shopify/order")
-async def shopify_order(request: Request):
-    data = await request.json()
-    orders = load_orders()
-    orders.append(data)
-    save_orders(orders)
-    return {"status": "ok"}
+    if resp.status_code != 200:
+        return {
+            "name": "Unknown Customer",
+            "email": None,
+            "phone": None
+        }
 
+    customer = resp.json().get("customer", {})
+    name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
 
-# -------------------------------------------------
-# GST helper
-# -------------------------------------------------
-def calculate_gst(amount_inr: float):
-    gst_total = round((amount_inr * GST_PERCENT) / 100, 2)
     return {
-        "cgst": round(gst_total / 2, 2),
-        "sgst": round(gst_total / 2, 2),
-        "igst": 0.0
+        "name": name if name else "Unknown Customer",
+        "email": customer.get("email"),
+        "phone": customer.get("phone")
     }
 
 
-# -------------------------------------------------
-# IST → UTC conversion (CRITICAL FIX)
-# -------------------------------------------------
-def ist_date_to_utc_range(date_str: str):
-    ist = timezone(timedelta(hours=5, minutes=30))
-
-    start_ist = datetime.strptime(date_str, "%Y-%m-%d").replace(
-        hour=0, minute=0, second=0, tzinfo=ist
-    )
-    end_ist = datetime.strptime(date_str, "%Y-%m-%d").replace(
-        hour=23, minute=59, second=59, tzinfo=ist
-    )
-
-    return (
-        start_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-        end_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    )
-
-
-# -------------------------------------------------
-# Tally → Fetch Webhook Orders (POST only)
-# -------------------------------------------------
-def build_tally_orders():
-    orders = load_orders()
-    tally_orders = []
-
-    for order in orders:
-        customer = order.get("customer") or {}
-
-        customer_name = (
-            f"{customer.get('first_name','')} {customer.get('last_name','')}"
-            .strip() or "Unknown Customer"
-        )
-
-        items = []
-        for li in order.get("line_items", []):
-            qty = li.get("quantity", 0)
-            rate_usd = float(li.get("price", 0))
-            rate_inr = round(rate_usd * USD_TO_INR_RATE, 2)
-            amount = round(qty * rate_inr, 2)
-
-            items.append({
-                "item_name": li.get("title"),
-                "quantity": qty,
-                "rate": rate_inr,
-                "amount": amount,
-                "gst": calculate_gst(amount)
-            })
-
-        total_inr = round(
-            float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
-        )
-
-        tally_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
-            "customer": {
-                "name": customer_name,
-                "email": customer.get("email"),
-                "phone": customer.get("phone")
-            },
-            "items": items,
-            "total_amount": total_inr,
-            "currency": "INR",
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
-
-    return {"orders": tally_orders}
-
-
-@app.post("/tally/orders")
-async def tally_orders_post():
-    return build_tally_orders()
-
-
-# -------------------------------------------------
-# Shopify → Tally (Date Range, CUSTOMER FIXED)
-# -------------------------------------------------
-def build_shopify_orders_by_date(from_date: str, to_date: str):
-    if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
-        raise HTTPException(status_code=500, detail="Shopify config missing")
-
-    from_utc, _ = ist_date_to_utc_range(from_date)
-    _, to_utc = ist_date_to_utc_range(to_date)
-
-    url = (
-        f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
-    )
-
-    params = {
-        "status": "any",
-        "created_at_min": from_utc,
-        "created_at_max": to_utc,
-        "limit": 250
-    }
-
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
-    }
-
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=response.text)
-
-    orders = response.json().get("orders", [])
-    tally_orders = []
-
-    for order in orders:
-        # -------- CUSTOMER (CORRECT WAY) --------
-        customer = order.get("customer")
-        billing = order.get("billing_address") or {}
-        shipping = order.get("shipping_address") or {}
-
-        customer_name = "Unknown Customer"
-        customer_email = None
-        customer_phone = None
-
-        if customer:
-            customer_name = (
-                f"{customer.get('first_name','')} {customer.get('last_name','')}"
-                .strip() or customer_name
-            )
-            customer_email = customer.get("email")
-            customer_phone = customer.get("phone")
-
-        elif billing:
-            customer_name = billing.get("name") or customer_name
-            customer_email = billing.get("email")
-            customer_phone = billing.get("phone")
-
-        elif shipping:
-            customer_name = shipping.get("name") or customer_name
-            customer_phone = shipping.get("phone")
-
-        customer_email = customer_email or order.get("email")
-
-        # -------- ITEMS --------
-        items = []
-        for li in order.get("line_items", []):
-            qty = li.get("quantity", 0)
-            rate_inr = round(float(li.get("price", 0)) * USD_TO_INR_RATE, 2)
-            amount = round(qty * rate_inr, 2)
-
-            items.append({
-                "item_name": li.get("title"),
-                "quantity": qty,
-                "rate": rate_inr,
-                "amount": amount,
-                "gst": calculate_gst(amount)
-            })
-
-        tally_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
-            "customer": {
-                "name": customer_name,
-                "email": customer_email,
-                "phone": customer_phone
-            },
-            "items": items,
-            "total_amount": round(
-                float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
-            ),
-            "currency": "INR",
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
-
-    return {"orders": tally_orders}
-
-
+# =========================
+# API
+# =========================
 @app.post("/tally/orders/shopify")
-async def get_shopify_orders_post(request: Request):
+async def fetch_shopify_orders(request: Request):
     body = await request.json()
     from_date = body.get("from_date")
     to_date = body.get("to_date")
 
     if not from_date or not to_date:
-        raise HTTPException(400, "from_date and to_date required")
+        raise HTTPException(status_code=400, detail="from_date and to_date are required")
 
-    return build_shopify_orders_by_date(from_date, to_date)
-
-
-# -------------------------------------------------
-# Tally → Shopify (Sales Push)
-# -------------------------------------------------
-def create_shopify_order(tally_data: dict):
-    url = (
-        f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
-    )
-
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
+    params = {
+        "status": "any",
+        "created_at_min": parse_date(from_date),
+        "created_at_max": parse_date(to_date),
+        "limit": 250
     }
 
-    line_items = []
-    for item in tally_data["items"]:
-        price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
-        line_items.append({
-            "title": item["item_name"],
-            "quantity": item["quantity"],
-            "price": price_usd
+    orders_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    resp = requests.get(orders_url, headers=HEADERS, params=params)
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=500, detail="Failed to fetch orders from Shopify")
+
+    orders = resp.json().get("orders", [])
+    result = []
+
+    for order in orders:
+        customer_info = None
+
+        if order.get("customer"):
+            cust = order["customer"]
+            customer_info = {
+                "name": f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip(),
+                "email": cust.get("email"),
+                "phone": cust.get("phone")
+            }
+        else:
+            customer_info = fetch_customer(order.get("customer_id"))
+
+        items = []
+        for item in order.get("line_items", []):
+            price = float(item.get("price", 0))
+            qty = int(item.get("quantity", 1))
+            amount = price * qty
+
+            cgst = round(amount * 0.09, 2)
+            sgst = round(amount * 0.09, 2)
+
+            items.append({
+                "item_name": item.get("name"),
+                "quantity": qty,
+                "rate": price,
+                "amount": amount,
+                "gst": {
+                    "cgst": cgst,
+                    "sgst": sgst,
+                    "igst": 0.0
+                }
+            })
+
+        result.append({
+            "voucher_type": "Sales",
+            "voucher_number": str(order.get("order_number")),
+            "voucher_date": order.get("created_at")[:10],
+            "customer": customer_info,
+            "items": items,
+            "total_amount": float(order.get("total_price", 0)),
+            "currency": order.get("currency"),
+            "source": "Shopify",
+            "shopify_order_id": order.get("id")
         })
 
-    payload = {
-        "order": {
-            "email": tally_data["customer"].get("email"),
-            "line_items": line_items,
-            "financial_status": "paid"
-        }
-    }
-
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code not in (200, 201):
-        raise HTTPException(500, response.text)
-
-    return response.json()
-
-
-@app.post("/tally/sales")
-async def tally_sales(request: Request):
-    data = await request.json()
-    result = create_shopify_order(data)
-
-    return {
-        "status": "success",
-        "shopify_order_id": result["order"]["id"]
-    }
+    return {"orders": result}
