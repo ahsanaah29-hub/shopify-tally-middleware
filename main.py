@@ -2,7 +2,6 @@ import json
 import os
 import requests
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -59,7 +58,7 @@ def calculate_gst(amount_inr: float):
 
 
 # -------------------------------------------------
-# Core logic reused by GET & POST
+# Core logic reused by GET & POST (TDL SAFE)
 # -------------------------------------------------
 def build_tally_orders():
     orders = load_orders()
@@ -67,7 +66,10 @@ def build_tally_orders():
 
     for order in orders:
         customer = order.get("customer") or {}
-        name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip() or "Unknown"
+        name = (
+            f"{customer.get('first_name','')} {customer.get('last_name','')}"
+            .strip() or "Unknown Customer"
+        )
 
         items = []
         for li in order.get("line_items", []):
@@ -106,7 +108,7 @@ def build_tally_orders():
 
 
 # -------------------------------------------------
-# Tally → Fetch Orders (GET)
+# Tally → Fetch Orders (GET)  [Postman / Browser]
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
@@ -114,7 +116,7 @@ async def get_orders_for_tally():
 
 
 # -------------------------------------------------
-# ✅ Tally → Fetch Orders (POST)  ← FIX FOR TDL
+# ✅ Tally → Fetch Orders (POST)  [TDL FIX]
 # -------------------------------------------------
 @app.post("/tally/orders")
 async def get_orders_for_tally_post():
@@ -125,7 +127,13 @@ async def get_orders_for_tally_post():
 # Helper: Push Order to Shopify (INR → USD)
 # -------------------------------------------------
 def create_shopify_order(tally_data: dict):
-    url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
+        raise HTTPException(status_code=500, detail="Shopify configuration missing")
+
+    url = (
+        f"https://{SHOPIFY_STORE}.myshopify.com/"
+        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    )
 
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
@@ -151,6 +159,7 @@ def create_shopify_order(tally_data: dict):
     }
 
     response = requests.post(url, headers=headers, json=payload)
+
     if response.status_code not in (200, 201):
         raise HTTPException(status_code=500, detail=response.text)
 
@@ -158,7 +167,7 @@ def create_shopify_order(tally_data: dict):
 
 
 # -------------------------------------------------
-# Tally → Shopify
+# Tally → Shopify (POST)
 # -------------------------------------------------
 @app.post("/tally/sales")
 async def tally_sales(request: Request):
@@ -174,11 +183,17 @@ async def tally_sales(request: Request):
 
 
 # -------------------------------------------------
-# Shopify → Tally (Date Range, INR + GST)
+# Shopify → Tally (Date Range, GET)
 # -------------------------------------------------
 @app.get("/tally/orders/shopify")
 async def get_shopify_orders_by_date(from_date: str, to_date: str):
-    url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
+        raise HTTPException(status_code=500, detail="Shopify configuration missing")
+
+    url = (
+        f"https://{SHOPIFY_STORE}.myshopify.com/"
+        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
+    )
 
     params = {
         "status": "any",
@@ -193,14 +208,18 @@ async def get_shopify_orders_by_date(from_date: str, to_date: str):
     }
 
     response = requests.get(url, headers=headers, params=params)
-    orders = response.json().get("orders", [])
 
+    if response.status_code != 200:
+        raise HTTPException(status_code=500, detail=response.text)
+
+    orders = response.json().get("orders", [])
     tally_orders = []
+
     for order in orders:
         items = []
         for li in order.get("line_items", []):
             qty = li.get("quantity") or 0
-            rate_inr = round(float(li.get("price")) * USD_TO_INR_RATE, 2)
+            rate_inr = round(float(li.get("price") or 0) * USD_TO_INR_RATE, 2)
             amount = round(qty * rate_inr, 2)
 
             items.append({
@@ -216,7 +235,7 @@ async def get_shopify_orders_by_date(from_date: str, to_date: str):
             "voucher_number": str(order.get("order_number")),
             "voucher_date": order.get("created_at", "")[:10],
             "items": items,
-            "total_amount": round(float(order.get("total_price")) * USD_TO_INR_RATE, 2),
+            "total_amount": round(float(order.get("total_price") or 0) * USD_TO_INR_RATE, 2),
             "currency": "INR",
             "source": "Shopify",
             "shopify_order_id": order.get("id")
