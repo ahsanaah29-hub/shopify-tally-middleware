@@ -85,6 +85,13 @@ def extract_customer(order: dict):
     billing = order.get("billing_address") or {}
     shipping = order.get("shipping_address") or {}
 
+    # note_attributes fallback
+    notes = {
+        (n.get("name") or "").strip().lower(): (n.get("value") or "").strip()
+        for n in order.get("note_attributes", [])
+        if n.get("name") and n.get("value")
+    }
+
     customer_name = "Unknown Customer"
     customer_email = order.get("email")
     customer_phone = None
@@ -102,16 +109,36 @@ def extract_customer(order: dict):
             customer_name = shipping_name
             customer_phone = shipping.get("phone")
 
-    # 3️⃣ Customer object (least reliable)
+    # 3️⃣ Customer object
     elif customer:
-        customer_name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip() or customer_name
+        customer_name = (
+            f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
+            or customer_name
+        )
         customer_phone = customer.get("phone")
 
-    # 4️⃣ Email fallback
+    # 4️⃣ note_attributes fallback (🔥 KEY FIX 🔥)
+    if customer_name == "Unknown Customer":
+        customer_name = (
+            notes.get("name")
+            or notes.get("customer")
+            or notes.get("full_name")
+            or customer_name
+        )
+
+    # Email fallback chain
     customer_email = (
         customer.get("email")
         or order.get("email")
+        or notes.get("email")
         or customer_email
+    )
+
+    # Phone fallback
+    customer_phone = (
+        customer_phone
+        or customer.get("phone")
+        or notes.get("phone")
     )
 
     return {
@@ -290,3 +317,4 @@ async def tally_sales(request: Request):
         "status": "success",
         "shopify_order_id": result["order"]["id"]
     }
+
