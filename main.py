@@ -174,7 +174,7 @@ async def tally_sales(request: Request):
     }
 
     line_items = []
-    for item in data["items"]:
+for item in data["items"]:
     product_name = item.get("product_name") or item.get("item_name")
 
     price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
@@ -184,6 +184,7 @@ async def tally_sales(request: Request):
         "quantity": item["quantity"],
         "price": price_usd
     })
+
 
     payload = {
         "order": {
@@ -201,4 +202,5 @@ async def tally_sales(request: Request):
         "status": "success",
         "shopify_order_id": response.json()["order"]["id"]
     }
+
 
