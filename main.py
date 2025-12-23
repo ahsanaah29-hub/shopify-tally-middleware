@@ -78,188 +78,160 @@ def ist_date_to_utc_range(date_str: str):
 
 
 # -------------------------------------------------
-# CUSTOMER EXTRACTION (SINGLE SOURCE OF TRUTH)
+# REST CUSTOMER EXTRACTION
 # -------------------------------------------------
 def extract_customer(order: dict):
     customer = order.get("customer") or {}
     billing = order.get("billing_address") or {}
     shipping = order.get("shipping_address") or {}
 
-    # note_attributes fallback
     notes = {
         (n.get("name") or "").strip().lower(): (n.get("value") or "").strip()
         for n in order.get("note_attributes", [])
         if n.get("name") and n.get("value")
     }
 
-    customer_name = "Unknown Customer"
-    customer_email = order.get("email")
-    customer_phone = None
-
-    # 1️⃣ Billing address (highest priority)
-    billing_name = f"{billing.get('first_name','')} {billing.get('last_name','')}".strip()
-    if billing_name:
-        customer_name = billing_name
-        customer_phone = billing.get("phone")
-
-    # 2️⃣ Shipping address
-    elif shipping:
-        shipping_name = f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip()
-        if shipping_name:
-            customer_name = shipping_name
-            customer_phone = shipping.get("phone")
-
-    # 3️⃣ Customer object
-    elif customer:
-        customer_name = (
-            f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
-            or customer_name
-        )
-        customer_phone = customer.get("phone")
-
-    # 4️⃣ note_attributes fallback (🔥 KEY FIX 🔥)
-    if customer_name == "Unknown Customer":
-        customer_name = (
-            notes.get("name")
-            or notes.get("customer")
-            or notes.get("full_name")
-            or customer_name
-        )
-
-    # Email fallback chain
+    customer_name = "Cash Customer"
     customer_email = (
         customer.get("email")
         or order.get("email")
+        or order.get("contact_email")
         or notes.get("email")
-        or customer_email
     )
 
-    # Phone fallback
-    customer_phone = (
-        customer_phone
-        or customer.get("phone")
-        or notes.get("phone")
-    )
+    if billing:
+        customer_name = f"{billing.get('first_name','')} {billing.get('last_name','')}".strip() or customer_name
+    elif shipping:
+        customer_name = f"{shipping.get('first_name','')} {shipping.get('last_name','')}".strip() or customer_name
+    elif notes.get("name"):
+        customer_name = notes.get("name")
 
     return {
         "name": customer_name,
         "email": customer_email,
-        "phone": customer_phone
+        "phone": None
     }
 
 
 # -------------------------------------------------
-# Tally → Fetch Webhook Orders
+# GRAPHQL HELPER
 # -------------------------------------------------
-@app.post("/tally/orders")
-async def tally_orders_post():
-    orders = load_orders()
-    tally_orders = []
-
-    for order in orders:
-        customer_data = extract_customer(order)
-
-        items = []
-        for li in order.get("line_items", []):
-            qty = li.get("quantity", 0)
-            rate_inr = round(float(li.get("price", 0)) * USD_TO_INR_RATE, 2)
-            amount = round(qty * rate_inr, 2)
-
-            items.append({
-                "item_name": li.get("title"),
-                "quantity": qty,
-                "rate": rate_inr,
-                "amount": amount,
-                "gst": calculate_gst(amount)
-            })
-
-        tally_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
-            "customer": customer_data,
-            "items": items,
-            "total_amount": round(
-                float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
-            ),
-            "currency": "INR",
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
-
-    return {"orders": tally_orders}
-
-
-# -------------------------------------------------
-# Shopify → Tally (DATE RANGE)
-# -------------------------------------------------
-def build_shopify_orders_by_date(from_date: str, to_date: str):
-    if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
-        raise HTTPException(500, "Shopify configuration missing")
-
-    from_utc, _ = ist_date_to_utc_range(from_date)
-    _, to_utc = ist_date_to_utc_range(to_date)
-
-    url = (
-        f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
-    )
-
-    params = {
-        "status": "any",
-        "created_at_min": from_utc,
-        "created_at_max": to_utc,
-        "limit": 250
-    }
-
+def shopify_graphql(query: str, variables: dict):
+    url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
     headers = {
         "X-Shopify-Access-Token": SHOPIFY_TOKEN,
         "Content-Type": "application/json"
     }
 
-    response = requests.get(url, headers=headers, params=params)
+    response = requests.post(url, headers=headers, json={
+        "query": query,
+        "variables": variables
+    })
+
     if response.status_code != 200:
         raise HTTPException(500, response.text)
 
-    orders = response.json().get("orders", [])
-    tally_orders = []
+    data = response.json()
+    if "errors" in data:
+        raise HTTPException(500, data["errors"])
 
-    for order in orders:
-        customer_data = extract_customer(order)
-
-        items = []
-        for li in order.get("line_items", []):
-            qty = li.get("quantity", 0)
-            rate_inr = round(float(li.get("price", 0)) * USD_TO_INR_RATE, 2)
-            amount = round(qty * rate_inr, 2)
-
-            items.append({
-                "item_name": li.get("title"),
-                "quantity": qty,
-                "rate": rate_inr,
-                "amount": amount,
-                "gst": calculate_gst(amount)
-            })
-
-        tally_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
-            "customer": customer_data,
-            "items": items,
-            "total_amount": round(
-                float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
-            ),
-            "currency": "INR",
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
-
-    return {"orders": tally_orders}
+    return data["data"]
 
 
-@app.post("/tally/orders/shopify")
-async def get_shopify_orders_post(request: Request):
+# -------------------------------------------------
+# GRAPHQL FETCH ORDERS
+# -------------------------------------------------
+def fetch_orders_graphql(from_date: str, to_date: str):
+    from_utc, _ = ist_date_to_utc_range(from_date)
+    _, to_utc = ist_date_to_utc_range(to_date)
+
+    query = """
+    query ($query: String!) {
+      orders(first: 250, query: $query) {
+        edges {
+          node {
+            id
+            name
+            displayName
+            createdAt
+            email
+            totalPriceSet {
+              shopMoney {
+                amount
+              }
+            }
+            customer {
+              displayName
+              email
+              phone
+            }
+            shippingAddress {
+              firstName
+              lastName
+              phone
+            }
+            billingAddress {
+              firstName
+              lastName
+              phone
+            }
+            lineItems(first: 50) {
+              edges {
+                node {
+                  title
+                  quantity
+                  originalUnitPriceSet {
+                    shopMoney {
+                      amount
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    search = f"created_at:>={from_utc} created_at:<={to_utc}"
+    data = shopify_graphql(query, {"query": search})
+    return data["orders"]["edges"]
+
+
+# -------------------------------------------------
+# GRAPHQL CUSTOMER EXTRACTION (ADMIN-ACCURATE)
+# -------------------------------------------------
+def extract_customer_graphql(order: dict):
+    name = (
+        order.get("displayName")
+        or (order.get("customer") or {}).get("displayName")
+        or "Cash Customer"
+    )
+
+    email = (
+        (order.get("customer") or {}).get("email")
+        or order.get("email")
+    )
+
+    phone = (
+        (order.get("customer") or {}).get("phone")
+        or (order.get("billingAddress") or {}).get("phone")
+        or (order.get("shippingAddress") or {}).get("phone")
+    )
+
+    return {
+        "name": name,
+        "email": email,
+        "phone": phone
+    }
+
+
+# -------------------------------------------------
+# GRAPHQL → TALLY
+# -------------------------------------------------
+@app.post("/tally/orders/shopify/graphql")
+async def get_shopify_orders_graphql(request: Request):
     body = await request.json()
     from_date = body.get("from_date")
     to_date = body.get("to_date")
@@ -267,54 +239,40 @@ async def get_shopify_orders_post(request: Request):
     if not from_date or not to_date:
         raise HTTPException(400, "from_date and to_date required")
 
-    return build_shopify_orders_by_date(from_date, to_date)
+    edges = fetch_orders_graphql(from_date, to_date)
+    tally_orders = []
 
+    for edge in edges:
+        order = edge["node"]
+        customer = extract_customer_graphql(order)
 
-# -------------------------------------------------
-# Tally → Shopify (Sales Push)
-# -------------------------------------------------
-def create_shopify_order(tally_data: dict):
-    url = (
-        f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
-    )
+        items = []
+        for li in order["lineItems"]["edges"]:
+            node = li["node"]
+            qty = node["quantity"]
+            rate_inr = round(float(node["originalUnitPriceSet"]["shopMoney"]["amount"]) * USD_TO_INR_RATE, 2)
+            amount = round(rate_inr * qty, 2)
 
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
-    }
+            items.append({
+                "item_name": node["title"],
+                "quantity": qty,
+                "rate": rate_inr,
+                "amount": amount,
+                "gst": calculate_gst(amount)
+            })
 
-    line_items = []
-    for item in tally_data["items"]:
-        price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
-        line_items.append({
-            "title": item["item_name"],
-            "quantity": item["quantity"],
-            "price": price_usd
+        total_inr = round(float(order["totalPriceSet"]["shopMoney"]["amount"]) * USD_TO_INR_RATE, 2)
+
+        tally_orders.append({
+            "voucher_type": "Sales",
+            "voucher_number": order["name"].replace("#", ""),
+            "voucher_date": order["createdAt"][:10],
+            "customer": customer,
+            "items": items,
+            "total_amount": total_inr,
+            "currency": "INR",
+            "source": "Shopify (GraphQL)",
+            "shopify_order_id": order["id"]
         })
 
-    payload = {
-        "order": {
-            "email": tally_data["customer"].get("email"),
-            "line_items": line_items,
-            "financial_status": "paid"
-        }
-    }
-
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code not in (200, 201):
-        raise HTTPException(500, response.text)
-
-    return response.json()
-
-
-@app.post("/tally/sales")
-async def tally_sales(request: Request):
-    data = await request.json()
-    result = create_shopify_order(data)
-
-    return {
-        "status": "success",
-        "shopify_order_id": result["order"]["id"]
-    }
-
+    return {"orders": tally_orders}
