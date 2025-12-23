@@ -81,31 +81,50 @@ def ist_date_to_utc_range(date_str: str):
 # Helper: Extract Customer (FIXED)
 # -------------------------------------------------
 def extract_customer(order: dict):
+    # 1️Registered customer
     customer = order.get("customer")
-
     if customer:
         name = f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
-        email = customer.get("email")
-        phone = customer.get("phone")
-    else:
-        billing = order.get("billing_address") or {}
-        shipping = order.get("shipping_address") or {}
+        if name:
+            return {
+                "name": name,
+                "email": customer.get("email"),
+                "phone": customer.get("phone")
+            }
 
-        name = (
-            billing.get("name")
-            or shipping.get("name")
-            or order.get("email")
-            or "Unknown Customer"
-        )
+    # 2️ Guest checkout → Billing address
+    billing = order.get("billing_address") or {}
+    if billing.get("name"):
+        return {
+            "name": billing.get("name"),
+            "email": billing.get("email") or order.get("email"),
+            "phone": billing.get("phone")
+        }
 
-        email = billing.get("email") or order.get("email")
-        phone = billing.get("phone") or shipping.get("phone")
+    # 3️Guest checkout → Shipping address
+    shipping = order.get("shipping_address") or {}
+    if shipping.get("name"):
+        return {
+            "name": shipping.get("name"),
+            "email": order.get("email"),
+            "phone": shipping.get("phone")
+        }
 
+    # 4️ Last fallback → Email
+    if order.get("email"):
+        return {
+            "name": order.get("email"),
+            "email": order.get("email"),
+            "phone": None
+        }
+
+    # 5️ Absolute fallback
     return {
-        "name": name,
-        "email": email,
-        "phone": phone
+        "name": "Unknown Customer",
+        "email": None,
+        "phone": None
     }
+
 
 
 # -------------------------------------------------
@@ -254,3 +273,4 @@ async def get_shopify_orders_by_date_post(request: Request):
         )
 
     return build_shopify_orders_by_date(from_date, to_date)
+
