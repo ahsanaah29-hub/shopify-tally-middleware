@@ -248,17 +248,29 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
                 "amount": amount,
                 "gst": calculate_gst(amount)
             })
+ customer = order.get("customer") or {}
 
-        tally_orders.append({
-            "voucher_type": "Sales",
-            "voucher_number": str(order.get("order_number")),
-            "voucher_date": order.get("created_at", "")[:10],
-            "items": items,
-            "total_amount": round(float(order.get("total_price") or 0) * USD_TO_INR_RATE, 2),
-            "currency": "INR",
-            "source": "Shopify",
-            "shopify_order_id": order.get("id")
-        })
+customer_name = (
+    f"{customer.get('first_name','')} {customer.get('last_name','')}"
+    .strip() or "Unknown Customer"
+)
+
+       
+tally_orders.append({
+    "voucher_type": "Sales",
+    "voucher_number": str(order.get("order_number")),
+    "voucher_date": order.get("created_at", "")[:10],
+    "customer": {
+        "name": customer_name,
+        "email": customer.get("email"),
+        "phone": customer.get("phone")
+    },
+    "items": items,
+    "total_amount": round(float(order.get("total_price") or 0) * USD_TO_INR_RATE, 2),
+    "currency": "INR",
+    "source": "Shopify",
+    "shopify_order_id": order.get("id")
+})
 
     return {"orders": tally_orders}
 
@@ -285,3 +297,4 @@ async def get_shopify_orders_by_date_post(request: Request):
         )
 
     return build_shopify_orders_by_date(from_date, to_date)
+
