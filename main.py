@@ -17,7 +17,7 @@ USD_TO_INR_RATE = float(os.getenv("USD_TO_INR_RATE", "83.0"))
 GST_PERCENT = float(os.getenv("GST_PERCENT", "18.0"))
 
 # -------------------------------------------------
-# Local storage (Webhook orders)
+# Local storage (Webhook Orders)
 # -------------------------------------------------
 ORDERS_FILE = "orders.json"
 
@@ -47,7 +47,7 @@ async def shopify_order(request: Request):
 
 
 # -------------------------------------------------
-# GST helper
+# GST Helper
 # -------------------------------------------------
 def calculate_gst(amount_inr: float):
     gst_total = round((amount_inr * GST_PERCENT) / 100, 2)
@@ -59,7 +59,7 @@ def calculate_gst(amount_inr: float):
 
 
 # -------------------------------------------------
-# IST → UTC conversion (CRITICAL FIX)
+# IST → UTC conversion
 # -------------------------------------------------
 def ist_date_to_utc_range(date_str: str):
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -80,7 +80,8 @@ def ist_date_to_utc_range(date_str: str):
 # -------------------------------------------------
 # Tally → Fetch Webhook Orders (POST only)
 # -------------------------------------------------
-def build_tally_orders():
+@app.post("/tally/orders")
+async def tally_orders_post():
     orders = load_orders()
     tally_orders = []
 
@@ -89,14 +90,12 @@ def build_tally_orders():
 
         customer_name = (
             f"{customer.get('first_name','')} {customer.get('last_name','')}"
-            .strip() or "Unknown Customer"
-        )
+        ).strip() or "Unknown Customer"
 
         items = []
         for li in order.get("line_items", []):
             qty = li.get("quantity", 0)
-            rate_usd = float(li.get("price", 0))
-            rate_inr = round(rate_usd * USD_TO_INR_RATE, 2)
+            rate_inr = round(float(li.get("price", 0)) * USD_TO_INR_RATE, 2)
             amount = round(qty * rate_inr, 2)
 
             items.append({
@@ -106,10 +105,6 @@ def build_tally_orders():
                 "amount": amount,
                 "gst": calculate_gst(amount)
             })
-
-        total_inr = round(
-            float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
-        )
 
         tally_orders.append({
             "voucher_type": "Sales",
@@ -121,7 +116,9 @@ def build_tally_orders():
                 "phone": customer.get("phone")
             },
             "items": items,
-            "total_amount": total_inr,
+            "total_amount": round(
+                float(order.get("total_price", 0)) * USD_TO_INR_RATE, 2
+            ),
             "currency": "INR",
             "source": "Shopify",
             "shopify_order_id": order.get("id")
@@ -130,17 +127,12 @@ def build_tally_orders():
     return {"orders": tally_orders}
 
 
-@app.post("/tally/orders")
-async def tally_orders_post():
-    return build_tally_orders()
-
-
 # -------------------------------------------------
-# Shopify → Tally (Date Range, CUSTOMER FIXED)
+# Shopify → Tally (DATE RANGE, CUSTOMER FIXED)
 # -------------------------------------------------
 def build_shopify_orders_by_date(from_date: str, to_date: str):
     if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
-        raise HTTPException(status_code=500, detail="Shopify config missing")
+        raise HTTPException(500, "Shopify configuration missing")
 
     from_utc, _ = ist_date_to_utc_range(from_date)
     _, to_utc = ist_date_to_utc_range(to_date)
@@ -164,39 +156,47 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
 
     response = requests.get(url, headers=headers, params=params)
     if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=response.text)
+        raise HTTPException(500, response.text)
 
     orders = response.json().get("orders", [])
     tally_orders = []
 
     for order in orders:
-        # -------- CUSTOMER (CORRECT WAY) --------
-        customer = order.get("customer")
+        customer = order.get("customer") or {}
         billing = order.get("billing_address") or {}
         shipping = order.get("shipping_address") or {}
 
+        # -------- CORRECT CUSTOMER PRIORITY --------
         customer_name = "Unknown Customer"
-        customer_email = None
+        customer_email = order.get("email")
         customer_phone = None
 
-        if customer:
-            customer_name = (
-                f"{customer.get('first_name','')} {customer.get('last_name','')}"
-                .strip() or customer_name
-            )
-            customer_email = customer.get("email")
-            customer_phone = customer.get("phone")
-
-        elif billing:
-            customer_name = billing.get("name") or customer_name
-            customer_email = billing.get("email")
+        billing_name = (
+            f"{billing.get('first_name','')} {billing.get('last_name','')}"
+        ).strip()
+        if billing_name:
+            customer_name = billing_name
             customer_phone = billing.get("phone")
 
-        elif shipping:
-            customer_name = shipping.get("name") or customer_name
-            customer_phone = shipping.get("phone")
+        else:
+            shipping_name = (
+                f"{shipping.get('first_name','')} {shipping.get('last_name','')}"
+            ).strip()
+            if shipping_name:
+                customer_name = shipping_name
+                customer_phone = shipping.get("phone")
 
-        customer_email = customer_email or order.get("email")
+            else:
+                customer_name = (
+                    f"{customer.get('first_name','')} {customer.get('last_name','')}"
+                ).strip() or customer_name
+                customer_phone = customer.get("phone")
+
+        customer_email = (
+            customer.get("email")
+            or billing.get("email")
+            or customer_email
+        )
 
         # -------- ITEMS --------
         items = []
