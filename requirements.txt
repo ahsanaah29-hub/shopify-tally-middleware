@@ -25,3 +25,6 @@ typing_extensions==4.15.0
 urllib3==2.6.1
 uvicorn==0.38.0
 xmltodict==1.0.2
+supabase==2.4.5
+
+
