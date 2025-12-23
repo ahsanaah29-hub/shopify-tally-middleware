@@ -1,130 +1,142 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
 import requests
-from datetime import datetime
 import os
 
 app = FastAPI()
 
-# =========================
-# CONFIG
-# =========================
-SHOPIFY_STORE = os.getenv("SHOPIFY_STORE")
+# ---------------- CONFIG ----------------
+SHOPIFY_STORE = os.getenv("SHOPIFY_STORE")  # example: myshop.myshopify.com
 SHOPIFY_TOKEN = os.getenv("SHOPIFY_TOKEN")
-SHOPIFY_API_VERSION = "2025-10"
+SHOPIFY_API_VERSION = "2025-01"
+
+SHOPIFY_ORDERS_URL = (
+    f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json"
+)
 
 HEADERS = {
     "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
 }
 
-
-# =========================
-# HELPERS
-# =========================
-def parse_date(date_str: str) -> str:
-    return datetime.strptime(date_str, "%Y-%m-%d").isoformat()
+# ---------------- MODELS ----------------
+class DateRange(BaseModel):
+    from_date: str
+    to_date: str
 
 
-def fetch_customer(customer_id: int):
-    if not customer_id:
+# ---------------- HELPERS ----------------
+def get_customer_details(order: dict) -> dict:
+    """
+    Shopify-safe customer extraction
+    """
+
+    # 1️⃣ Billing address (BEST SOURCE)
+    billing = order.get("billing_address")
+    if billing:
+        name = f"{billing.get('first_name', '')} {billing.get('last_name', '')}".strip()
+        if name:
+            return {
+                "name": name,
+                "email": order.get("email"),
+                "phone": billing.get("phone"),
+            }
+
+    # 2️⃣ Shipping address
+    shipping = order.get("shipping_address")
+    if shipping:
+        name = f"{shipping.get('first_name', '')} {shipping.get('last_name', '')}".strip()
+        if name:
+            return {
+                "name": name,
+                "email": order.get("email"),
+                "phone": shipping.get("phone"),
+            }
+
+    # 3️⃣ Customer object (NOT reliable alone)
+    customer = order.get("customer")
+    if customer:
+        name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
+        if name:
+            return {
+                "name": name,
+                "email": customer.get("email"),
+                "phone": customer.get("phone"),
+            }
+
+    # 4️⃣ Email fallback
+    if order.get("email"):
         return {
-            "name": "Unknown Customer",
-            "email": None,
-            "phone": None
+            "name": order["email"],
+            "email": order["email"],
+            "phone": None,
         }
 
-    url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/customers/{customer_id}.json"
-    resp = requests.get(url, headers=HEADERS)
-
-    if resp.status_code != 200:
-        return {
-            "name": "Unknown Customer",
-            "email": None,
-            "phone": None
-        }
-
-    customer = resp.json().get("customer", {})
-    name = f"{customer.get('first_name', '')} {customer.get('last_name', '')}".strip()
-
+    # 5️⃣ Final fallback
     return {
-        "name": name if name else "Unknown Customer",
-        "email": customer.get("email"),
-        "phone": customer.get("phone")
+        "name": "Unknown Customer",
+        "email": None,
+        "phone": None,
     }
 
 
-# =========================
-# API
-# =========================
-@app.post("/tally/orders/shopify")
-async def fetch_shopify_orders(request: Request):
-    body = await request.json()
-    from_date = body.get("from_date")
-    to_date = body.get("to_date")
-
-    if not from_date or not to_date:
-        raise HTTPException(status_code=400, detail="from_date and to_date are required")
-
+def fetch_shopify_orders(from_date: str, to_date: str) -> List[dict]:
     params = {
         "status": "any",
-        "created_at_min": parse_date(from_date),
-        "created_at_max": parse_date(to_date),
-        "limit": 250
+        "created_at_min": f"{from_date}T00:00:00",
+        "created_at_max": f"{to_date}T23:59:59",
+        "limit": 250,
     }
 
-    orders_url = f"https://{SHOPIFY_STORE}/admin/api/{SHOPIFY_API_VERSION}/orders.json"
-    resp = requests.get(orders_url, headers=HEADERS, params=params)
+    response = requests.get(SHOPIFY_ORDERS_URL, headers=HEADERS, params=params)
 
-    if resp.status_code != 200:
-        raise HTTPException(status_code=500, detail="Failed to fetch orders from Shopify")
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Shopify API error: {response.text}",
+        )
 
-    orders = resp.json().get("orders", [])
+    return response.json().get("orders", [])
+
+
+# ---------------- API ----------------
+@app.post("/tally/orders/shopify")
+def get_orders(payload: DateRange):
+    orders = fetch_shopify_orders(payload.from_date, payload.to_date)
+
     result = []
 
     for order in orders:
-        customer_info = None
-
-        if order.get("customer"):
-            cust = order["customer"]
-            customer_info = {
-                "name": f"{cust.get('first_name', '')} {cust.get('last_name', '')}".strip(),
-                "email": cust.get("email"),
-                "phone": cust.get("phone")
-            }
-        else:
-            customer_info = fetch_customer(order.get("customer_id"))
+        customer = get_customer_details(order)
 
         items = []
-        for item in order.get("line_items", []):
-            price = float(item.get("price", 0))
-            qty = int(item.get("quantity", 1))
-            amount = price * qty
-
-            cgst = round(amount * 0.09, 2)
-            sgst = round(amount * 0.09, 2)
+        for line in order.get("line_items", []):
+            price = float(line.get("price", 0))
+            gst = price * 0.18
 
             items.append({
-                "item_name": item.get("name"),
-                "quantity": qty,
+                "item_name": line.get("name"),
+                "quantity": line.get("quantity"),
                 "rate": price,
-                "amount": amount,
+                "amount": price,
                 "gst": {
-                    "cgst": cgst,
-                    "sgst": sgst,
-                    "igst": 0.0
-                }
+                    "cgst": gst / 2,
+                    "sgst": gst / 2,
+                    "igst": 0.0,
+                },
             })
 
         result.append({
             "voucher_type": "Sales",
             "voucher_number": str(order.get("order_number")),
             "voucher_date": order.get("created_at")[:10],
-            "customer": customer_info,
+            "customer": customer,
             "items": items,
             "total_amount": float(order.get("total_price", 0)),
             "currency": order.get("currency"),
             "source": "Shopify",
-            "shopify_order_id": order.get("id")
+            "shopify_order_id": order.get("id"),
         })
 
     return {"orders": result}
