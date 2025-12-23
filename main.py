@@ -1,6 +1,7 @@
 import json
 import os
 import requests
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request, HTTPException
 
 app = FastAPI()
@@ -58,6 +59,25 @@ def calculate_gst(amount_inr: float):
 
 
 # -------------------------------------------------
+# ✅ Helper: IST date → UTC range (CRITICAL FIX)
+# -------------------------------------------------
+def ist_date_to_utc_range(date_str: str):
+    ist = timezone(timedelta(hours=5, minutes=30))
+
+    start_ist = datetime.strptime(date_str, "%Y-%m-%d").replace(
+        hour=0, minute=0, second=0, tzinfo=ist
+    )
+    end_ist = datetime.strptime(date_str, "%Y-%m-%d").replace(
+        hour=23, minute=59, second=59, tzinfo=ist
+    )
+
+    return (
+        start_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        end_ist.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+
+
+# -------------------------------------------------
 # Core logic reused by GET & POST (TDL SAFE)
 # -------------------------------------------------
 def build_tally_orders():
@@ -108,16 +128,13 @@ def build_tally_orders():
 
 
 # -------------------------------------------------
-# Tally → Fetch Orders (GET)
+# Tally → Fetch Orders (GET + POST)
 # -------------------------------------------------
 @app.get("/tally/orders")
 async def get_orders_for_tally():
     return build_tally_orders()
 
 
-# -------------------------------------------------
-# ✅ Tally → Fetch Orders (POST) [TDL FIX]
-# -------------------------------------------------
 @app.post("/tally/orders")
 async def get_orders_for_tally_post():
     return build_tally_orders()
@@ -183,11 +200,14 @@ async def tally_sales(request: Request):
 
 
 # -------------------------------------------------
-# Core logic: Shopify → Tally (Date Range)
+# Core logic: Shopify → Tally (Date Range, IST SAFE)
 # -------------------------------------------------
 def build_shopify_orders_by_date(from_date: str, to_date: str):
     if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
         raise HTTPException(status_code=500, detail="Shopify configuration missing")
+
+    from_utc, _ = ist_date_to_utc_range(from_date)
+    _, to_utc = ist_date_to_utc_range(to_date)
 
     url = (
         f"https://{SHOPIFY_STORE}.myshopify.com/"
@@ -196,8 +216,8 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
 
     params = {
         "status": "any",
-        "created_at_min": f"{from_date}T00:00:00Z",
-        "created_at_max": f"{to_date}T23:59:59Z",
+        "created_at_min": from_utc,
+        "created_at_max": to_utc,
         "limit": 250
     }
 
@@ -244,16 +264,13 @@ def build_shopify_orders_by_date(from_date: str, to_date: str):
 
 
 # -------------------------------------------------
-# Shopify → Tally (GET)
+# Shopify → Tally (GET + POST)
 # -------------------------------------------------
 @app.get("/tally/orders/shopify")
 async def get_shopify_orders_by_date(from_date: str, to_date: str):
     return build_shopify_orders_by_date(from_date, to_date)
 
 
-# -------------------------------------------------
-# ✅ Shopify → Tally (POST) [TDL FIX]
-# -------------------------------------------------
 @app.post("/tally/orders/shopify")
 async def get_shopify_orders_by_date_post(request: Request):
     body = await request.json()
