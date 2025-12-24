@@ -44,12 +44,19 @@ async def shopify_order(request: Request):
     billing = order.get("billing_address") or {}
     shipping = order.get("shipping_address") or {}
 
-    customer_name = (
-        f"{customer.get('first_name','')} {customer.get('last_name','')}".strip()
-        or billing.get("name")
-        or shipping.get("name")
-        or "Unknown Customer"
-    )
+    # ✅ SAFE CUSTOMER NAME LOGIC
+    first_name = customer.get("first_name")
+    last_name = customer.get("last_name")
+
+    if first_name or last_name:
+        customer_name = f"{first_name or ''} {last_name or ''}".strip()
+    else:
+        customer_name = (
+            billing.get("name")
+            or shipping.get("name")
+            or customer.get("email")
+            or "Unknown Customer"
+        )
 
     customer_email = (
         customer.get("email")
@@ -63,7 +70,7 @@ async def shopify_order(request: Request):
         or shipping.get("phone")
     )
 
-    # ✅ USE PRESENTMENT MONEY (INR)
+    # ✅ PRESENTMENT MONEY (INR)
     presentment_total = (
         order.get("total_price_set", {})
              .get("presentment_money", {})
@@ -189,6 +196,13 @@ async def tally_sales(request: Request):
         "Content-Type": "application/json"
     }
 
+    # ✅ CUSTOMER NAME HANDLING
+    full_name = data.get("customer", {}).get("name", "").strip()
+    name_parts = full_name.split(" ", 1)
+
+    first_name = name_parts[0] if name_parts else ""
+    last_name = name_parts[1] if len(name_parts) > 1 else ""
+
     line_items = []
     for item in data.get("items", []):
         product_name = item.get("product_name") or item.get("item_name")
@@ -202,6 +216,11 @@ async def tally_sales(request: Request):
     payload = {
         "order": {
             "email": data["customer"].get("email"),
+            "customer": {
+                "first_name": first_name,
+                "last_name": last_name,
+                "email": data["customer"].get("email")
+            },
             "line_items": line_items,
             "financial_status": "paid",
             "currency": "INR"
