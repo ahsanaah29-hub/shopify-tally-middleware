@@ -12,7 +12,6 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
 SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME", "").strip()
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01").strip()
 
-USD_TO_INR_RATE = float(os.getenv("USD_TO_INR_RATE", "83.0"))
 GST_PERCENT = float(os.getenv("GST_PERCENT", "18.0"))
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -24,10 +23,10 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # -------------------------------------------------
-# GST helper
+# GST helper (INR)
 # -------------------------------------------------
-def calculate_gst(amount_inr: float):
-    gst_total = round((amount_inr * GST_PERCENT) / 100, 2)
+def calculate_gst(amount: float):
+    gst_total = round((amount * GST_PERCENT) / 100, 2)
     return {
         "cgst": round(gst_total / 2, 2),
         "sgst": round(gst_total / 2, 2),
@@ -72,7 +71,7 @@ async def shopify_order(request: Request):
             "customer_name": customer_name,
             "customer_email": customer_email,
             "customer_phone": customer_phone,
-            "total_amount": float(order.get("total_price", 0)) * USD_TO_INR_RATE,
+            "total_amount": float(order.get("total_price", 0)),  # INR
             "currency": "INR",
             "source": "Shopify",
             "raw_order": order
@@ -89,7 +88,7 @@ async def shopify_order(request: Request):
 
     for li in order.get("line_items", []):
         qty = li.get("quantity", 0)
-        rate = float(li.get("price", 0)) * USD_TO_INR_RATE
+        rate = float(li.get("price", 0))  # INR
         amount = qty * rate
         gst = calculate_gst(amount)
 
@@ -153,7 +152,7 @@ async def tally_orders_post(request: Request):
                 for i in o["order_items"]
             ],
             "total_amount": o["total_amount"],
-            "currency": o["currency"],
+            "currency": "INR",
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
         })
@@ -180,19 +179,19 @@ async def tally_sales(request: Request):
     line_items = []
     for item in data.get("items", []):
         product_name = item.get("product_name") or item.get("item_name")
-        price_usd = round(item["rate"] / USD_TO_INR_RATE, 2)
 
         line_items.append({
             "title": product_name,
             "quantity": item["quantity"],
-            "price": price_usd
+            "price": round(item["rate"], 2)  # INR
         })
 
     payload = {
         "order": {
             "email": data["customer"].get("email"),
             "line_items": line_items,
-            "financial_status": "paid"
+            "financial_status": "paid",
+            "currency": "INR"
         }
     }
 
