@@ -63,6 +63,12 @@ async def shopify_order(request: Request):
         or shipping.get("phone")
     )
 
+    # ✅ USE PRESENTMENT MONEY (INR)
+    presentment_total = (
+        order.get("total_price_set", {})
+             .get("presentment_money", {})
+    )
+
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -71,8 +77,8 @@ async def shopify_order(request: Request):
             "customer_name": customer_name,
             "customer_email": customer_email,
             "customer_phone": customer_phone,
-            "total_amount": float(order.get("total_price", 0)),  # INR
-            "currency": "INR",
+            "total_amount": float(presentment_total.get("amount", 0)),
+            "currency": presentment_total.get("currency_code", "INR"),
             "source": "Shopify",
             "raw_order": order
         },
@@ -86,9 +92,16 @@ async def shopify_order(request: Request):
         .eq("order_id", order_id) \
         .execute()
 
+    # ✅ LINE ITEMS – PRESENTMENT PRICE (INR)
     for li in order.get("line_items", []):
         qty = li.get("quantity", 0)
-        rate = float(li.get("price", 0))  # INR
+
+        price_set = (
+            li.get("price_set", {})
+              .get("presentment_money", {})
+        )
+
+        rate = float(price_set.get("amount", 0))
         amount = qty * rate
         gst = calculate_gst(amount)
 
@@ -152,7 +165,7 @@ async def tally_orders_post(request: Request):
                 for i in o["order_items"]
             ],
             "total_amount": o["total_amount"],
-            "currency": "INR",
+            "currency": o["currency"],
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
         })
