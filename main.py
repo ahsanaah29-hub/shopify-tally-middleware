@@ -1,3 +1,5 @@
+import urllib.parse
+from fastapi.responses import RedirectResponse
 import os
 import requests
 from fastapi import FastAPI, Request, HTTPException
@@ -236,3 +238,68 @@ async def tally_sales(request: Request):
         "status": "success",
         "shopify_order_id": response.json()["order"]["id"]
     }
+
+# -------------------------------------------------
+# Shopify OAuth – Install App
+# -------------------------------------------------
+SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY", "").strip()
+SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET", "").strip()
+
+SCOPES = "read_orders,read_products,read_customers,write_orders"
+
+REDIRECT_URI = (
+    "https://shopify-tally-middleware.onrender.com/auth/callback"
+)
+
+@app.get("/auth/install")
+def shopify_install(shop: str):
+    if not shop:
+        raise HTTPException(400, "Missing shop parameter")
+
+    params = {
+        "client_id": SHOPIFY_API_KEY,
+        "scope": SCOPES,
+        "redirect_uri": REDIRECT_URI,
+    }
+
+    query = urllib.parse.urlencode(params)
+    install_url = f"https://{shop}/admin/oauth/authorize?{query}"
+
+    return RedirectResponse(install_url)
+
+
+# -------------------------------------------------
+# Shopify OAuth – Callback
+# -------------------------------------------------
+@app.get("/auth/callback")
+def shopify_callback(code: str, shop: str):
+    if not code or not shop:
+        raise HTTPException(400, "Invalid OAuth response")
+
+    token_url = f"https://{shop}/admin/oauth/access_token"
+
+    payload = {
+        "client_id": SHOPIFY_API_KEY,
+        "client_secret": SHOPIFY_API_SECRET,
+        "code": code
+    }
+
+    response = requests.post(token_url, json=payload)
+
+    if response.status_code != 200:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Token exchange failed: {response.text}"
+        )
+
+    data = response.json()
+    access_token = data.get("access_token")
+
+    # 👉 For now just return it (later we store in Supabase)
+    return {
+        "status": "app_installed",
+        "shop": shop,
+        "access_token_received": bool(access_token)
+    }
+
+
