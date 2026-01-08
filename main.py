@@ -306,8 +306,7 @@ def shopify_callback(code: str, shop: str):
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    # Get shop parameter if embedded
-    shop = request.query_params.get("shop", "your-store")
+    shop = request.query_params.get("shop", "aina-india")
     
     return """
     <!DOCTYPE html>
@@ -315,156 +314,545 @@ async def root(request: Request):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Shopify-Tally Integration</title>
+        <title>AINA - Shopify-Tally Sync</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 min-height: 100vh;
-                padding: 40px 20px;
+                padding: 20px;
             }
             .container {
-                max-width: 800px;
+                max-width: 1200px;
                 margin: 0 auto;
-                background: white;
-                border-radius: 16px;
-                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-                overflow: hidden;
             }
             .header {
-                background: linear-gradient(135deg, #5e72e4 0%, #825ee4 100%);
-                padding: 40px;
-                color: white;
+                background: white;
+                padding: 32px;
+                border-radius: 16px;
+                margin-bottom: 24px;
+                box-shadow: 0 10px 40px rgba(0,0,0,0.1);
                 text-align: center;
             }
             .header h1 {
                 font-size: 2.5rem;
-                margin-bottom: 10px;
-            }
-            .status-badge {
-                display: inline-block;
-                background: rgba(255,255,255,0.2);
-                padding: 8px 16px;
-                border-radius: 20px;
-                font-size: 0.9rem;
-                margin-top: 10px;
-            }
-            .content {
-                padding: 40px;
-            }
-            .card {
-                background: #f8f9fa;
-                border-radius: 12px;
-                padding: 24px;
-                margin-bottom: 20px;
-                border-left: 4px solid #5e72e4;
-            }
-            .card h3 {
-                color: #2d3748;
-                margin-bottom: 12px;
-                font-size: 1.3rem;
-            }
-            .card p {
-                color: #4a5568;
-                line-height: 1.6;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
                 margin-bottom: 8px;
             }
-            .endpoint {
-                background: #2d3748;
-                color: #48bb78;
-                padding: 12px;
-                border-radius: 6px;
-                font-family: 'Courier New', monospace;
-                margin-top: 10px;
-                font-size: 0.9rem;
+            .header p {
+                color: #6d7175;
+                font-size: 1.1rem;
             }
-            .success { color: #48bb78; font-weight: 600; }
-            .grid {
+            .status-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                background: #d1f7e5;
+                color: #008060;
+                padding: 8px 20px;
+                border-radius: 24px;
+                font-weight: 600;
+                margin-top: 16px;
+            }
+            .sync-flow {
                 display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 16px;
-                margin-top: 20px;
+                grid-template-columns: 1fr auto 1fr;
+                gap: 24px;
+                margin-bottom: 32px;
+                align-items: center;
             }
-            .stat {
+            .sync-box {
                 background: white;
+                padding: 32px;
+                border-radius: 16px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+                text-align: center;
+            }
+            .sync-box h3 {
+                color: #202223;
+                font-size: 1.5rem;
+                margin-bottom: 12px;
+            }
+            .sync-box .icon {
+                font-size: 3rem;
+                margin-bottom: 16px;
+            }
+            .sync-arrow {
+                font-size: 3rem;
+                color: white;
+                animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+                0%, 100% { opacity: 1; transform: scale(1); }
+                50% { opacity: 0.7; transform: scale(1.1); }
+            }
+            .tabs {
+                display: flex;
+                gap: 12px;
+                margin-bottom: 24px;
+                flex-wrap: wrap;
+            }
+            .tab {
+                padding: 14px 28px;
+                background: white;
+                border: none;
+                border-radius: 12px;
+                cursor: pointer;
+                font-size: 1rem;
+                font-weight: 500;
+                transition: all 0.3s;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }
+            .tab:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            }
+            .tab.active {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .tab-content {
+                display: none;
+            }
+            .tab-content.active {
+                display: block;
+                animation: fadeIn 0.3s;
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+            .card {
+                background: white;
+                padding: 32px;
+                border-radius: 16px;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+                margin-bottom: 24px;
+            }
+            .card h2 {
+                color: #202223;
+                font-size: 1.8rem;
+                margin-bottom: 24px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            .form-group {
+                margin-bottom: 24px;
+            }
+            .form-group label {
+                display: block;
+                margin-bottom: 8px;
+                color: #202223;
+                font-weight: 600;
+                font-size: 0.95rem;
+            }
+            .form-group input,
+            .form-group select {
+                width: 100%;
+                padding: 14px;
+                border: 2px solid #e1e3e5;
+                border-radius: 8px;
+                font-size: 1rem;
+                transition: border 0.3s;
+            }
+            .form-group input:focus,
+            .form-group select:focus {
+                outline: none;
+                border-color: #667eea;
+            }
+            .form-row {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                gap: 20px;
+            }
+            .btn {
+                padding: 14px 32px;
+                border: none;
+                border-radius: 8px;
+                font-size: 1rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s;
+            }
+            .btn-primary {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+            }
+            .btn-primary:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 20px rgba(102, 126, 234, 0.4);
+            }
+            .btn-secondary {
+                background: #f6f6f7;
+                color: #202223;
+            }
+            .btn-secondary:hover {
+                background: #e1e3e5;
+            }
+            .items-section {
+                border: 2px dashed #c9cccf;
+                padding: 24px;
+                border-radius: 12px;
+                margin: 24px 0;
+                background: #fafbfb;
+            }
+            .item-row {
+                display: grid;
+                grid-template-columns: 2fr 1fr 1fr 60px;
+                gap: 16px;
+                margin-bottom: 16px;
+                align-items: end;
+            }
+            .remove-btn {
+                background: #d82c0d;
+                color: white;
+                border: none;
+                padding: 14px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-weight: bold;
+            }
+            .remove-btn:hover {
+                background: #bf2600;
+            }
+            .success-msg {
+                background: linear-gradient(135deg, #d1f7e5 0%, #a7f3d0 100%);
+                color: #065f46;
+                padding: 16px;
+                border-radius: 8px;
+                margin-top: 16px;
+                display: none;
+                font-weight: 500;
+            }
+            .error-msg {
+                background: linear-gradient(135deg, #fed3d1 0%, #fca5a1 100%);
+                color: #991b1b;
+                padding: 16px;
+                border-radius: 8px;
+                margin-top: 16px;
+                display: none;
+                font-weight: 500;
+            }
+            .feature-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+                gap: 20px;
+                margin-top: 24px;
+            }
+            .feature-card {
+                background: linear-gradient(135deg, #f6f6f7 0%, #ffffff 100%);
+                padding: 24px;
+                border-radius: 12px;
+                border-left: 4px solid #667eea;
+            }
+            .feature-card h4 {
+                color: #202223;
+                font-size: 1.2rem;
+                margin-bottom: 12px;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .feature-card p {
+                color: #6d7175;
+                line-height: 1.6;
+            }
+            .webhook-box {
+                background: #1f2937;
+                color: #10b981;
                 padding: 20px;
                 border-radius: 8px;
-                text-align: center;
-                border: 2px solid #e2e8f0;
+                font-family: 'Courier New', monospace;
+                font-size: 0.95rem;
+                margin: 16px 0;
+                overflow-x: auto;
             }
-            .stat-value {
-                font-size: 1.8rem;
-                font-weight: bold;
-                color: #5e72e4;
-            }
-            .stat-label {
-                color: #718096;
-                margin-top: 4px;
+            .info-badge {
+                display: inline-block;
+                background: #eff6ff;
+                color: #1e40af;
+                padding: 6px 14px;
+                border-radius: 6px;
                 font-size: 0.9rem;
+                font-weight: 600;
+                margin: 4px;
             }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
-                <h1>🔗 Shopify-Tally Integration</h1>
-                <div class="status-badge">✅ Active & Running</div>
+                <h1>👗 AINA Clothing Store</h1>
+                <p>Seamless Order Synchronization</p>
+                <div class="status-badge">
+                    <span>●</span> Active & Syncing
+                </div>
             </div>
-            
-            <div class="content">
-                <div class="card">
-                    <h3>📊 Integration Status</h3>
-                    <p class="success">Your Shopify-Tally middleware is successfully connected!</p>
-                    <p>This app automatically syncs orders between Shopify and Tally ERP.</p>
-                </div>
 
-                <div class="card">
-                    <h3>⚙️ Configuration</h3>
-                    <p><strong>Store:</strong> """ + shop + """</p>
-                    <p><strong>API Version:</strong> """ + SHOPIFY_API_VERSION + """</p>
-                    <p><strong>GST Rate:</strong> """ + str(GST_PERCENT) + """%</p>
+            <div class="sync-flow">
+                <div class="sync-box">
+                    <div class="icon">🛍️</div>
+                    <h3>Shopify</h3>
+                    <p style="color: #6d7175;">Online Store Orders</p>
                 </div>
-
-                <div class="card">
-                    <h3>🔔 Webhook Setup</h3>
-                    <p>Configure the following webhook in your Shopify admin:</p>
-                    <div class="endpoint">POST https://shopify-tally-middleware.onrender.com/shopify/order</div>
-                    <p style="margin-top:12px;"><strong>Event:</strong> Order creation (orders/create)</p>
-                    <p><strong>Format:</strong> JSON</p>
+                <div class="sync-arrow">⇄</div>
+                <div class="sync-box">
+                    <div class="icon">📊</div>
+                    <h3>Tally ERP</h3>
+                    <p style="color: #6d7175;">Accounting System</p>
                 </div>
+            </div>
 
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('create')">📝 Create Order</button>
+                <button class="tab" onclick="showTab('sync')">🔄 Sync Status</button>
+                <button class="tab" onclick="showTab('features')">✨ Features</button>
+                <button class="tab" onclick="showTab('settings')">⚙️ Settings</button>
+            </div>
+
+            <!-- CREATE ORDER TAB -->
+            <div id="create" class="tab-content active">
                 <div class="card">
-                    <h3>📡 Available Endpoints</h3>
-                    <div class="grid">
-                        <div class="stat">
-                            <div class="stat-value">POST</div>
-                            <div class="stat-label">/shopify/order</div>
+                    <h2>📝 Create New Clothing Order</h2>
+                    <form id="orderForm" onsubmit="createOrder(event)">
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Customer Name *</label>
+                                <input type="text" id="customerName" required placeholder="Enter customer name">
+                            </div>
+                            <div class="form-group">
+                                <label>Customer Email *</label>
+                                <input type="email" id="customerEmail" required placeholder="customer@example.com">
+                            </div>
                         </div>
-                        <div class="stat">
-                            <div class="stat-value">POST</div>
-                            <div class="stat-label">/tally/orders</div>
+
+                        <div class="form-group">
+                            <label>Phone Number</label>
+                            <input type="tel" id="customerPhone" placeholder="+91 9876543210">
                         </div>
-                        <div class="stat">
-                            <div class="stat-value">POST</div>
-                            <div class="stat-label">/tally/sales</div>
+
+                        <div class="items-section">
+                            <h3 style="margin-bottom: 20px; color: #202223;">🛒 Order Items</h3>
+                            <div id="itemsList">
+                                <div class="item-row">
+                                    <div class="form-group" style="margin: 0;">
+                                        <label>Product/Garment Name</label>
+                                        <input type="text" class="item-name" required placeholder="e.g., Cotton T-Shirt, Denim Jeans">
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label>Quantity</label>
+                                        <input type="number" class="item-quantity" required min="1" value="1">
+                                    </div>
+                                    <div class="form-group" style="margin: 0;">
+                                        <label>Price (₹)</label>
+                                        <input type="number" class="item-price" required min="0" step="0.01" placeholder="0.00">
+                                    </div>
+                                    <button type="button" class="remove-btn" onclick="removeItem(this)">✕</button>
+                                </div>
+                            </div>
+                            <button type="button" class="btn btn-secondary" onclick="addItem()" style="margin-top: 12px;">
+                                + Add More Items
+                            </button>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            🚀 Create Order & Sync to Shopify
+                        </button>
+                    </form>
+
+                    <div id="successMsg" class="success-msg"></div>
+                    <div id="errorMsg" class="error-msg"></div>
+                </div>
+            </div>
+
+            <!-- SYNC STATUS TAB -->
+            <div id="sync" class="tab-content">
+                <div class="card">
+                    <h2>🔄 Two-Way Synchronization</h2>
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>→ Shopify to Tally</h4>
+                            <p>When orders are placed on your Shopify store, they automatically sync to Tally ERP with GST calculations.</p>
+                            <div style="margin-top: 12px;">
+                                <span class="info-badge">Auto-sync enabled</span>
+                            </div>
+                        </div>
+                        <div class="feature-card">
+                            <h4>← Tally to Shopify</h4>
+                            <p>Create orders from this interface and they'll be pushed to Shopify with proper customer and product details.</p>
+                            <div style="margin-top: 12px;">
+                                <span class="info-badge">Manual sync</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="margin-top: 32px;">
+                        <h3 style="margin-bottom: 16px;">Webhook Configuration</h3>
+                        <p style="color: #6d7175; margin-bottom: 12px;">Your active webhook endpoint:</p>
+                        <div class="webhook-box">POST https://shopify-tally-middleware.onrender.com/shopify/order</div>
+                        <p style="color: #6d7175; margin-top: 12px;">
+                            <strong>Event:</strong> orders/create | <strong>Format:</strong> JSON
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- FEATURES TAB -->
+            <div id="features" class="tab-content">
+                <div class="card">
+                    <h2>✨ Key Features</h2>
+                    <div class="feature-grid">
+                        <div class="feature-card">
+                            <h4>🧾 Auto GST Calculation</h4>
+                            <p>Automatically calculates CGST (""" + str(GST_PERCENT/2) + """%) and SGST (""" + str(GST_PERCENT/2) + """%) for all orders synced to Tally.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>💰 INR Currency</h4>
+                            <p>All transactions are processed in Indian Rupees (₹) with proper currency handling.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>📦 Order Management</h4>
+                            <p>Complete order details including customer info, line items, and pricing sync seamlessly.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>🗄️ Supabase Storage</h4>
+                            <p>All order data is securely stored in Supabase database with full order history.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>⚡ Real-time Sync</h4>
+                            <p>Orders sync instantly via webhooks when created in Shopify.</p>
+                        </div>
+                        <div class="feature-card">
+                            <h4>👥 Customer Tracking</h4>
+                            <p>Track customer names, emails, and phone numbers across both systems.</p>
                         </div>
                     </div>
                 </div>
+            </div>
 
+            <!-- SETTINGS TAB -->
+            <div id="settings" class="tab-content">
                 <div class="card">
-                    <h3>📚 Next Steps</h3>
-                    <p>1. Configure webhook in Shopify Settings → Notifications</p>
-                    <p>2. Test with a sample order</p>
-                    <p>3. Verify data sync in Supabase database</p>
-                    <p>4. Connect Tally ERP for bidirectional sync</p>
+                    <h2>⚙️ Configuration</h2>
+                    <div class="feature-card" style="margin-bottom: 20px;">
+                        <h4>Store Information</h4>
+                        <p><strong>Store:</strong> """ + shop + """.myshopify.com</p>
+                        <p><strong>API Version:</strong> """ + SHOPIFY_API_VERSION + """</p>
+                        <p><strong>GST Rate:</strong> """ + str(GST_PERCENT) + """%</p>
+                    </div>
+
+                    <div class="feature-card">
+                        <h4>API Endpoints</h4>
+                        <p><strong>Shopify Webhook:</strong> /shopify/order</p>
+                        <p><strong>Fetch Tally Orders:</strong> /tally/orders</p>
+                        <p><strong>Push to Shopify:</strong> /tally/sales</p>
+                    </div>
                 </div>
             </div>
         </div>
+
+        <script>
+            function showTab(tabName) {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                event.target.classList.add('active');
+                document.getElementById(tabName).classList.add('active');
+            }
+
+            function addItem() {
+                const itemsList = document.getElementById('itemsList');
+                const newItem = document.createElement('div');
+                newItem.className = 'item-row';
+                newItem.innerHTML = `
+                    <div class="form-group" style="margin: 0;">
+                        <input type="text" class="item-name" required placeholder="e.g., Cotton T-Shirt, Denim Jeans">
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                        <input type="number" class="item-quantity" required min="1" value="1">
+                    </div>
+                    <div class="form-group" style="margin: 0;">
+                        <input type="number" class="item-price" required min="0" step="0.01" placeholder="0.00">
+                    </div>
+                    <button type="button" class="remove-btn" onclick="removeItem(this)">✕</button>
+                `;
+                itemsList.appendChild(newItem);
+            }
+
+            function removeItem(btn) {
+                if (document.querySelectorAll('.item-row').length > 1) {
+                    btn.closest('.item-row').remove();
+                }
+            }
+
+            async function createOrder(event) {
+                event.preventDefault();
+                
+                const successMsg = document.getElementById('successMsg');
+                const errorMsg = document.getElementById('errorMsg');
+                successMsg.style.display = 'none';
+                errorMsg.style.display = 'none';
+
+                const submitBtn = event.target.querySelector('button[type="submit"]');
+                submitBtn.disabled = true;
+                submitBtn.textContent = '⏳ Creating Order...';
+
+                const customerName = document.getElementById('customerName').value;
+                const customerEmail = document.getElementById('customerEmail').value;
+                const customerPhone = document.getElementById('customerPhone').value;
+
+                const items = [];
+                document.querySelectorAll('.item-row').forEach(row => {
+                    items.push({
+                        product_name: row.querySelector('.item-name').value,
+                        quantity: parseInt(row.querySelector('.item-quantity').value),
+                        rate: parseFloat(row.querySelector('.item-price').value)
+                    });
+                });
+
+                const payload = {
+                    customer: {
+                        name: customerName,
+                        email: customerEmail,
+                        phone: customerPhone
+                    },
+                    items: items
+                };
+
+                try {
+                    const response = await fetch('/tally/sales', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    const result = await response.json();
+
+                    if (response.ok) {
+                        successMsg.textContent = `✅ Success! Order created in Shopify with ID: ${result.shopify_order_id}`;
+                        successMsg.style.display = 'block';
+                        document.getElementById('orderForm').reset();
+                        
+                        // Scroll to success message
+                        successMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    } else {
+                        throw new Error(result.detail || 'Failed to create order');
+                    }
+                } catch (error) {
+                    errorMsg.textContent = `❌ Error: ${error.message}`;
+                    errorMsg.style.display = 'block';
+                    errorMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } finally {
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = '🚀 Create Order & Sync to Shopify';
+                }
+            }
+        </script>
     </body>
     </html>
     """
-
-
-
-
