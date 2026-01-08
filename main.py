@@ -1,4 +1,6 @@
 import urllib.parse
+from fastapi.responses import HTMLResponse
+
 from fastapi.responses import RedirectResponse
 import os
 import requests
@@ -302,18 +304,167 @@ def shopify_callback(code: str, shop: str):
         "access_token_received": bool(access_token)
     }
 
-@app.get("/")
-async def root():
-    return {
-        "status": "running",
-        "app": "Shopify-Tally Middleware",
-        "version": "1.0",
-        "endpoints": {
-            "webhook": "/shopify/order",
-            "install": "/auth/install",
-            "callback": "/auth/callback"
-        }
-    }
+@app.get("/", response_class=HTMLResponse)
+async def root(request: Request):
+    # Get shop parameter if embedded
+    shop = request.query_params.get("shop", "your-store")
+    
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Shopify-Tally Integration</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 40px 20px;
+            }
+            .container {
+                max-width: 800px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 16px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+                overflow: hidden;
+            }
+            .header {
+                background: linear-gradient(135deg, #5e72e4 0%, #825ee4 100%);
+                padding: 40px;
+                color: white;
+                text-align: center;
+            }
+            .header h1 {
+                font-size: 2.5rem;
+                margin-bottom: 10px;
+            }
+            .status-badge {
+                display: inline-block;
+                background: rgba(255,255,255,0.2);
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 0.9rem;
+                margin-top: 10px;
+            }
+            .content {
+                padding: 40px;
+            }
+            .card {
+                background: #f8f9fa;
+                border-radius: 12px;
+                padding: 24px;
+                margin-bottom: 20px;
+                border-left: 4px solid #5e72e4;
+            }
+            .card h3 {
+                color: #2d3748;
+                margin-bottom: 12px;
+                font-size: 1.3rem;
+            }
+            .card p {
+                color: #4a5568;
+                line-height: 1.6;
+                margin-bottom: 8px;
+            }
+            .endpoint {
+                background: #2d3748;
+                color: #48bb78;
+                padding: 12px;
+                border-radius: 6px;
+                font-family: 'Courier New', monospace;
+                margin-top: 10px;
+                font-size: 0.9rem;
+            }
+            .success { color: #48bb78; font-weight: 600; }
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 16px;
+                margin-top: 20px;
+            }
+            .stat {
+                background: white;
+                padding: 20px;
+                border-radius: 8px;
+                text-align: center;
+                border: 2px solid #e2e8f0;
+            }
+            .stat-value {
+                font-size: 1.8rem;
+                font-weight: bold;
+                color: #5e72e4;
+            }
+            .stat-label {
+                color: #718096;
+                margin-top: 4px;
+                font-size: 0.9rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🔗 Shopify-Tally Integration</h1>
+                <div class="status-badge">✅ Active & Running</div>
+            </div>
+            
+            <div class="content">
+                <div class="card">
+                    <h3>📊 Integration Status</h3>
+                    <p class="success">Your Shopify-Tally middleware is successfully connected!</p>
+                    <p>This app automatically syncs orders between Shopify and Tally ERP.</p>
+                </div>
+
+                <div class="card">
+                    <h3>⚙️ Configuration</h3>
+                    <p><strong>Store:</strong> """ + shop + """</p>
+                    <p><strong>API Version:</strong> """ + SHOPIFY_API_VERSION + """</p>
+                    <p><strong>GST Rate:</strong> """ + str(GST_PERCENT) + """%</p>
+                </div>
+
+                <div class="card">
+                    <h3>🔔 Webhook Setup</h3>
+                    <p>Configure the following webhook in your Shopify admin:</p>
+                    <div class="endpoint">POST https://shopify-tally-middleware.onrender.com/shopify/order</div>
+                    <p style="margin-top:12px;"><strong>Event:</strong> Order creation (orders/create)</p>
+                    <p><strong>Format:</strong> JSON</p>
+                </div>
+
+                <div class="card">
+                    <h3>📡 Available Endpoints</h3>
+                    <div class="grid">
+                        <div class="stat">
+                            <div class="stat-value">POST</div>
+                            <div class="stat-label">/shopify/order</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-value">POST</div>
+                            <div class="stat-label">/tally/orders</div>
+                        </div>
+                        <div class="stat">
+                            <div class="stat-value">POST</div>
+                            <div class="stat-label">/tally/sales</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>📚 Next Steps</h3>
+                    <p>1. Configure webhook in Shopify Settings → Notifications</p>
+                    <p>2. Test with a sample order</p>
+                    <p>3. Verify data sync in Supabase database</p>
+                    <p>4. Connect Tally ERP for bidirectional sync</p>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
 
 
 
