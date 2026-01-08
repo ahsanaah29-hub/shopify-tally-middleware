@@ -302,4 +302,18 @@ def shopify_callback(code: str, shop: str):
         "access_token_received": bool(access_token)
     }
 
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "app": "Shopify-Tally Middleware",
+        "version": "1.0",
+        "endpoints": {
+            "webhook": "/shopify/order",
+            "install": "/auth/install",
+            "callback": "/auth/callback"
+        }
+    }
+
+
 
