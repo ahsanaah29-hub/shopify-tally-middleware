@@ -158,11 +158,14 @@ async def tally_orders_post(request: Request):
         total_with_gst = 0
 
         for i in o["order_items"]:
-            gst_value = (i["cgst"] or 0) + (i["sgst"] or 0) + (i["igst"] or 0)
+            amount_ex_gst = float(i["amount_ex_gst"] or 0)
+            amount_with_gst = float(i["amount"] or 0)
+    
+            gst_value = float(i["cgst"] or 0) + float(i["sgst"] or 0) + float(i["igst"] or 0)
 
-            total_ex_gst += float(i["amount_ex_gst"])
-            total_gst += float(gst_value)
-            total_with_gst += float(i["amount"])
+            total_ex_gst += amount_ex_gst
+            total_gst += gst_value
+            total_with_gst += amount_with_gst
 
             items.append({
                 "item_name": i["item_name"],
@@ -870,5 +873,6 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
