@@ -176,7 +176,7 @@ async def tally_orders_post(request: Request):
                 for i in o["order_items"]
             ],
             "total_amount": o["total_amount"],
-            "total_amount_with_gst": o["total_amount"]
+            "total_amount_with_gst": o["total_amount"],
             "currency": o["currency"],
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
@@ -857,3 +857,4 @@ async def root(request: Request):
     </body>
     </html>
     """
+
