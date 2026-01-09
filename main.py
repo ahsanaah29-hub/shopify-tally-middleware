@@ -36,6 +36,11 @@ def calculate_gst(amount: float):
         "sgst": round(gst_total / 2, 2),
         "igst": 0.0
     }
+def calculate_amount_ex_gst(inclusive_amount: float, gst_percent: float):
+    if gst_percent <= 0:
+        return round(inclusive_amount, 2)
+    return round(inclusive_amount / (1 + gst_percent / 100), 2)
+
 
 # -------------------------------------------------
 # Shopify → Middleware (Webhook → Supabase)
@@ -115,16 +120,19 @@ async def shopify_order(request: Request):
         rate = float(price_set.get("amount", 0))
         amount = qty * rate
         gst = calculate_gst(amount)
+        amount_ex_gst = calculate_amount_ex_gst(amount, GST_PERCENT)
+
 
         supabase.table("order_items").insert({
-            "order_id": order_id,
-            "item_name": li.get("title"),
-            "quantity": qty,
-            "rate": round(rate, 2),
-            "amount": round(amount, 2),
-            "cgst": gst["cgst"],
-            "sgst": gst["sgst"],
-            "igst": gst["igst"]
+        "order_id": order_id,
+        "item_name": li.get("title"),
+        "quantity": qty,
+        "rate": round(rate, 2),
+        "amount": round(amount, 2),          # GST-inclusive (unchanged)
+        "amount_ex_gst": amount_ex_gst,       # ✅ NEW FIELD
+        "cgst": gst["cgst"],
+        "sgst": gst["sgst"],
+        "igst": gst["igst"]
         }).execute()
 
     return {"status": "stored"}
@@ -856,3 +864,4 @@ async def root(request: Request):
     </body>
     </html>
     """
+
