@@ -151,6 +151,32 @@ async def tally_orders_post(request: Request):
     tally_orders = []
 
     for o in res.data:
+
+        items = []
+        total_ex_gst = 0
+        total_gst = 0
+        total_with_gst = 0
+
+        for i in o["order_items"]:
+            gst_value = (i["cgst"] or 0) + (i["sgst"] or 0) + (i["igst"] or 0)
+
+            total_ex_gst += float(i["amount_ex_gst"])
+            total_gst += float(gst_value)
+            total_with_gst += float(i["amount"])
+
+            items.append({
+                "item_name": i["item_name"],
+                "quantity": i["quantity"],
+                "rate": i["rate"],
+                "amount": i["amount_ex_gst"],
+                "amount_with_gst": i["amount"],
+                "gst": {
+                    "cgst": i["cgst"],
+                    "sgst": i["sgst"],
+                    "igst": i["igst"]
+                }
+            })
+
         tally_orders.append({
             "voucher_type": "Sales",
             "voucher_number": o["order_number"],
@@ -160,23 +186,12 @@ async def tally_orders_post(request: Request):
                 "email": o["customer_email"],
                 "phone": o["customer_phone"]
             },
-            "items": [
-                {
-                    "item_name": i["item_name"],
-                    "quantity": i["quantity"],
-                    "rate": i["rate"],
-                    "amount": i["amount_ex_gst"],
-                    "amount_with_gst": i["amount"],
-                    "gst": {
-                        "cgst": i["cgst"],
-                        "sgst": i["sgst"],
-                        "igst": i["igst"]
-                    }
-                }
-                for i in o["order_items"]
-            ],
-            "total_amount": o["total_amount"],
-            "total_amount_with_gst": o["total_amount"],
+            "items": items,
+
+            "total_gst": round(total_gst, 2),
+            "total_amount": round(total_ex_gst, 2),
+            "total_amount_with_gst": round(total_with_gst, 2),
+
             "currency": o["currency"],
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
@@ -184,8 +199,6 @@ async def tally_orders_post(request: Request):
 
     return {"orders": tally_orders}
 
-# -------------------------------------------------
-# Tally → Shopify (Sales Push)
 # -------------------------------------------------
 @app.post("/tally/sales")
 async def tally_sales(request: Request):
@@ -857,4 +870,5 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
