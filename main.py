@@ -70,6 +70,13 @@ async def shopify_order(request: Request):
     total_gst = float(order.get("total_tax", 0))
     total_ex_gst = round(total_with_gst - total_gst, 2)
 
+    shipping_lines = order.get("shipping_lines", [])
+    shipping_charge = float(shipping_lines[0]["price"]) if shipping_lines else 0
+
+    shipping_tax = 0
+    if shipping_lines and shipping_lines[0].get("tax_lines"):
+        shipping_tax = float(shipping_lines[0]["tax_lines"][0]["price"])
+
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -80,6 +87,8 @@ async def shopify_order(request: Request):
             "customer_phone": customer_phone,
             "total_amount": total_with_gst,
             "total_amount_ex_gst": total_ex_gst,
+            "shipping_charge": shipping_charge,
+            "shipping_gst": shipping_tax,
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
@@ -122,7 +131,9 @@ async def shopify_order(request: Request):
             "amount_ex_gst": amount_ex_gst,
             "cgst": cgst,
             "sgst": sgst,
-            "igst": igst
+            "igst": igst,
+            "shipping_charge": shipping_charge,
+            "shipping_gst": shipping_tax
         }).execute()
 
     return {"status": "stored"}
@@ -160,7 +171,7 @@ async def tally_orders_post(request: Request):
         for i in o["order_items"]:
             amount_ex_gst = float(i["amount_ex_gst"] or 0)
             amount_with_gst = float(i["amount"] or 0)
-    
+
             gst_value = float(i["cgst"] or 0) + float(i["sgst"] or 0) + float(i["igst"] or 0)
 
             total_ex_gst += amount_ex_gst
@@ -171,14 +182,20 @@ async def tally_orders_post(request: Request):
                 "item_name": i["item_name"],
                 "quantity": i["quantity"],
                 "rate": i["rate"],
-                "amount": i["amount_ex_gst"],
-                "amount_with_gst": i["amount"],
+                "amount": amount_ex_gst,
+                "amount_with_gst": amount_with_gst,
                 "gst": {
                     "cgst": i["cgst"],
                     "sgst": i["sgst"],
                     "igst": i["igst"]
                 }
             })
+
+        # ✅ Shipping must be calculated per order
+        shipping = float(o.get("shipping_charge") or 0)
+        shipping_gst = float(o.get("shipping_gst") or 0)
+
+        grand_total = total_with_gst + shipping
 
         tally_orders.append({
             "voucher_type": "Sales",
@@ -191,9 +208,15 @@ async def tally_orders_post(request: Request):
             },
             "items": items,
 
-            "total_gst": round(total_gst, 2),
+            "total_gst": round(total_gst + shipping_gst, 2),
+
+            "shipping_charge": round(shipping, 2),
+            "shipping_gst": round(shipping_gst, 2),
+
             "total_amount": round(total_ex_gst, 2),
             "total_amount_with_gst": round(total_with_gst, 2),
+
+            "grand_total": round(grand_total, 2),
 
             "currency": o["currency"],
             "source": o["source"],
@@ -201,6 +224,7 @@ async def tally_orders_post(request: Request):
         })
 
     return {"orders": tally_orders}
+
 
 # -------------------------------------------------
 @app.post("/tally/sales")
@@ -873,6 +897,7 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
 
