@@ -71,11 +71,18 @@ async def shopify_order(request: Request):
     total_ex_gst = round(total_with_gst - total_gst, 2)
 
     shipping_lines = order.get("shipping_lines", [])
-    shipping_charge = float(shipping_lines[0]["price"]) if shipping_lines else 0
 
-    shipping_tax = 0
-    if shipping_lines and shipping_lines[0].get("tax_lines"):
-        shipping_tax = float(shipping_lines[0]["tax_lines"][0]["price"])
+    shipping_charge = sum(
+        float(s["price"])
+        for s in shipping_lines
+    )
+
+    shipping_tax = sum(
+        float(t["price"])
+        for s in shipping_lines
+        for t in s.get("tax_lines", [])
+    )
+
 
     res = supabase.table("orders").upsert(
         {
@@ -102,25 +109,33 @@ async def shopify_order(request: Request):
 
     for li in order.get("line_items", []):
         qty = li.get("quantity", 0)
+        price = float(li.get("price", 0))
 
-        price_with_gst = float(li.get("price", 0))
-        amount_with_gst = round(price_with_gst * qty, 2)
+    # 👉 Sum all discounts applied to this item
+        discount = sum(
+            float(d["amount"])
+            for d in li.get("discount_allocations", [])
+        )
 
+        gross = price * qty
+        amount_with_gst = round(gross - discount, 2)
+
+    # 👉 GST from Shopify (already correct)
         tax_lines = li.get("tax_lines", [])
-        tax = tax_lines[0] if tax_lines else {}
-
-        gst_amount = float(tax.get("price", 0))
-        gst_type = tax.get("title")
+        gst_amount = sum(float(t["price"]) for t in tax_lines)
 
         amount_ex_gst = round(amount_with_gst - gst_amount, 2)
 
         cgst = sgst = igst = 0
-        if gst_type == "IGST":
-            igst = gst_amount
-        elif gst_type == "CGST":
-            cgst = gst_amount
-        elif gst_type == "SGST":
-            sgst = gst_amount
+        for t in tax_lines:
+            if t["title"] == "CGST":
+                cgst = float(t["price"])
+            elif t["title"] == "SGST":
+                sgst = float(t["price"])
+            elif t["title"] == "IGST":
+                igst = float(t["price"])
+
+        
 
         supabase.table("order_items").insert({
             "order_id": order_id,
@@ -131,9 +146,7 @@ async def shopify_order(request: Request):
             "amount_ex_gst": amount_ex_gst,
             "cgst": cgst,
             "sgst": sgst,
-            "igst": igst,
-            "shipping_charge": shipping_charge,
-            "shipping_gst": shipping_tax
+            "igst": igst
         }).execute()
 
     return {"status": "stored"}
@@ -162,38 +175,56 @@ async def tally_orders_post(request: Request):
     tally_orders = []
 
     for o in res.data:
+        raw = o["raw_order"]
+        shopify_lines = raw.get("line_items", [])
 
         items = []
         total_ex_gst = 0
         total_gst = 0
         total_with_gst = 0
+        
+        for li in shopify_lines:
+            qty = li["quantity"]
+            price = float(li["price"])
 
-        for i in o["order_items"]:
-            amount_ex_gst = float(i["amount_ex_gst"] or 0)
-            amount_with_gst = float(i["amount"] or 0)
+            discount = sum(float(d["amount"]) for d in li.get("discount_allocations", []))
+            gross = price * qty
+            amount_with_gst = gross - discount
 
-            gst_value = float(i["cgst"] or 0) + float(i["sgst"] or 0) + float(i["igst"] or 0)
+            gst = sum(float(t["price"]) for t in li.get("tax_lines", []))
+            amount_ex_gst = amount_with_gst - gst
 
             total_ex_gst += amount_ex_gst
-            total_gst += gst_value
+            total_gst += gst
             total_with_gst += amount_with_gst
 
             items.append({
-                "item_name": i["item_name"],
-                "quantity": i["quantity"],
-                "rate": i["rate"],
-                "amount": amount_ex_gst,
-                "amount_with_gst": amount_with_gst,
+                "item_name": li["title"],
+                "quantity": qty,
+                "rate": round(amount_ex_gst / qty, 2),
+                "amount": round(amount_ex_gst, 2),
+                "amount_with_gst": round(amount_with_gst, 2),
                 "gst": {
-                    "cgst": i["cgst"],
-                    "sgst": i["sgst"],
-                    "igst": i["igst"]
+                    "cgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="CGST"), 0),
+                    "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
+                    "igst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="IGST"), 0),
                 }
             })
 
         # ✅ Shipping must be calculated per order
-        shipping = float(o.get("shipping_charge") or 0)
-        shipping_gst = float(o.get("shipping_gst") or 0)
+        raw = o["raw_order"]
+
+        shipping = sum(
+            float(s["price"])
+            for s in raw.get("shipping_lines", [])
+        )
+
+        shipping_gst = sum(
+            float(t["price"])
+            for s in raw.get("shipping_lines", [])
+            for t in s.get("tax_lines", [])
+        )
+
 
         grand_total = total_with_gst + shipping
 
@@ -897,6 +928,7 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
 
