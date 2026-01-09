@@ -16,7 +16,7 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
 SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME", "").strip()
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01").strip()
 
-GST_PERCENT = float(os.getenv("GST_PERCENT", "18.0"))
+
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -29,18 +29,6 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -------------------------------------------------
 # GST helper (INR)
 # -------------------------------------------------
-def calculate_gst(amount: float):
-    gst_total = round((amount * GST_PERCENT) / 100, 2)
-    return {
-        "cgst": round(gst_total / 2, 2),
-        "sgst": round(gst_total / 2, 2),
-        "igst": 0.0
-    }
-def calculate_amount_ex_gst(inclusive_amount: float, gst_percent: float):
-    if gst_percent <= 0:
-        return round(inclusive_amount, 2)
-    return round(inclusive_amount / (1 + gst_percent / 100), 2)
-
 
 # -------------------------------------------------
 # Shopify → Middleware (Webhook → Supabase)
@@ -53,7 +41,6 @@ async def shopify_order(request: Request):
     billing = order.get("billing_address") or {}
     shipping = order.get("shipping_address") or {}
 
-    # ✅ SAFE CUSTOMER NAME LOGIC
     first_name = customer.get("first_name")
     last_name = customer.get("last_name")
 
@@ -79,11 +66,9 @@ async def shopify_order(request: Request):
         or shipping.get("phone")
     )
 
-    # ✅ PRESENTMENT MONEY (INR)
-    presentment_total = (
-        order.get("total_price_set", {})
-             .get("presentment_money", {})
-    )
+    total_with_gst = float(order.get("total_price", 0))
+    total_gst = float(order.get("total_tax", 0))
+    total_ex_gst = round(total_with_gst - total_gst, 2)
 
     res = supabase.table("orders").upsert(
         {
@@ -93,8 +78,9 @@ async def shopify_order(request: Request):
             "customer_name": customer_name,
             "customer_email": customer_email,
             "customer_phone": customer_phone,
-            "total_amount": float(presentment_total.get("amount", 0)),
-            "currency": presentment_total.get("currency_code", "INR"),
+            "total_amount": total_with_gst,
+            "total_amount_ex_gst": total_ex_gst,
+            "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
         },
@@ -103,39 +89,44 @@ async def shopify_order(request: Request):
 
     order_id = res.data[0]["id"]
 
-    supabase.table("order_items") \
-        .delete() \
-        .eq("order_id", order_id) \
-        .execute()
+    supabase.table("order_items").delete().eq("order_id", order_id).execute()
 
-    # ✅ LINE ITEMS – PRESENTMENT PRICE (INR)
     for li in order.get("line_items", []):
         qty = li.get("quantity", 0)
 
-        price_set = (
-            li.get("price_set", {})
-              .get("presentment_money", {})
-        )
+        price_with_gst = float(li.get("price", 0))
+        amount_with_gst = round(price_with_gst * qty, 2)
 
-        rate = float(price_set.get("amount", 0))
-        amount = qty * rate
-        gst = calculate_gst(amount)
-        amount_ex_gst = calculate_amount_ex_gst(amount, GST_PERCENT)
+        tax_lines = li.get("tax_lines", [])
+        tax = tax_lines[0] if tax_lines else {}
 
+        gst_amount = float(tax.get("price", 0))
+        gst_type = tax.get("title")
+
+        amount_ex_gst = round(amount_with_gst - gst_amount, 2)
+
+        cgst = sgst = igst = 0
+        if gst_type == "IGST":
+            igst = gst_amount
+        elif gst_type == "CGST":
+            cgst = gst_amount
+        elif gst_type == "SGST":
+            sgst = gst_amount
 
         supabase.table("order_items").insert({
-        "order_id": order_id,
-        "item_name": li.get("title"),
-        "quantity": qty,
-        "rate": round(rate, 2),
-        "amount": round(amount, 2),          # GST-inclusive (unchanged)
-        "amount_ex_gst": amount_ex_gst,       # ✅ NEW FIELD
-        "cgst": gst["cgst"],
-        "sgst": gst["sgst"],
-        "igst": gst["igst"]
+            "order_id": order_id,
+            "item_name": li.get("title"),
+            "quantity": qty,
+            "rate": round(amount_ex_gst / qty, 2),   # Ex-GST rate
+            "amount": amount_with_gst,              # With GST
+            "amount_ex_gst": amount_ex_gst,
+            "cgst": cgst,
+            "sgst": sgst,
+            "igst": igst
         }).execute()
 
     return {"status": "stored"}
+
 
 # -------------------------------------------------
 # Tally → Fetch Orders
@@ -174,7 +165,8 @@ async def tally_orders_post(request: Request):
                     "item_name": i["item_name"],
                     "quantity": i["quantity"],
                     "rate": i["rate"],
-                    "amount": i["amount"],
+                    "amount": i["amount_ex_gst"],
+                    "amount_with_gst": i["amount"],
                     "gst": {
                         "cgst": i["cgst"],
                         "sgst": i["sgst"],
@@ -184,6 +176,7 @@ async def tally_orders_post(request: Request):
                 for i in o["order_items"]
             ],
             "total_amount": o["total_amount"],
+            "total_amount_with_gst": o["total_amount"]
             "currency": o["currency"],
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
@@ -864,4 +857,3 @@ async def root(request: Request):
     </body>
     </html>
     """
-
