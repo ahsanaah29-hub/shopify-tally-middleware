@@ -1,5 +1,5 @@
 import urllib.parse
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse3
 
 from fastapi.responses import RedirectResponse
 import os
@@ -234,8 +234,8 @@ async def tally_orders_post(request: Request):
             for t in s.get("tax_lines", [])
         )
 
-
-        grand_total = net_item_amount + total_gst + shipping
+# Shopify already computed the final amount
+        grand_total = float(raw["total_price"])
 
 
         tally_orders.append({
@@ -258,8 +258,8 @@ async def tally_orders_post(request: Request):
             "discount_amount": round(discount_amount, 2),
             "net_item_amount": round(net_item_amount, 2),
 
-            "total_amount": round(net_item_amount - total_gst, 2),     # ex-GST after discount
-            "total_amount_with_gst": round(net_item_amount, 2),      
+            "total_amount": round(net_item_amount - total_gst, 2),   # ex-GST
+            "total_amount_with_gst": round(net_item_amount, 2),       
 
             "grand_total": round(grand_total, 2),
 
@@ -942,6 +942,7 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
 
