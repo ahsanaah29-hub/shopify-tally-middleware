@@ -176,6 +176,15 @@ async def tally_orders_post(request: Request):
 
     for o in res.data:
         raw = o["raw_order"]
+        gross_item_amount = sum(
+            float(li["price"]) * li["quantity"]
+            for li in raw.get("line_items", [])
+        )
+
+        discount_amount = float(raw.get("total_discounts", 0))
+
+        net_item_amount = round(gross_item_amount - discount_amount, 2)
+
         shopify_lines = raw.get("line_items", [])
 
         items = []
@@ -226,7 +235,8 @@ async def tally_orders_post(request: Request):
         )
 
 
-        grand_total = total_with_gst + shipping
+        grand_total = net_item_amount + total_gst + shipping
+
 
         tally_orders.append({
             "voucher_type": "Sales",
@@ -244,8 +254,12 @@ async def tally_orders_post(request: Request):
             "shipping_charge": round(shipping, 2),
             "shipping_gst": round(shipping_gst, 2),
 
-            "total_amount": round(total_ex_gst, 2),
-            "total_amount_with_gst": round(total_with_gst, 2),
+            "gross_item_amount": round(gross_item_amount, 2),
+            "discount_amount": round(discount_amount, 2),
+            "net_item_amount": round(net_item_amount, 2),
+
+            "total_amount": round(net_item_amount - total_gst, 2),     # ex-GST after discount
+            "total_amount_with_gst": round(net_item_amount, 2),      
 
             "grand_total": round(grand_total, 2),
 
@@ -928,6 +942,7 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
 
