@@ -1,6 +1,6 @@
+
 import urllib.parse
 from fastapi.responses import HTMLResponse
-
 from fastapi.responses import RedirectResponse
 import os
 import requests
@@ -16,8 +16,6 @@ SHOPIFY_TOKEN = os.getenv("SHOPIFY_ACCESS_TOKEN", "").strip()
 SHOPIFY_STORE = os.getenv("SHOPIFY_STORE_NAME", "").strip()
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01").strip()
 
-
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
@@ -25,10 +23,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
     raise RuntimeError("Supabase config missing")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# -------------------------------------------------
-# GST helper (INR)
-# -------------------------------------------------
 
 # -------------------------------------------------
 # Shopify → Middleware (Webhook → Supabase)
@@ -83,7 +77,6 @@ async def shopify_order(request: Request):
         for t in s.get("tax_lines", [])
     )
 
-
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -135,14 +128,16 @@ async def shopify_order(request: Request):
             elif t["title"] == "IGST":
                 igst = float(t["price"])
 
-        
+        # ✅ FIX: Use original Shopify price (with GST, before discount) as rate
+        # This matches what's displayed in Shopify
+        original_rate_with_gst = price
 
         supabase.table("order_items").insert({
             "order_id": order_id,
             "item_name": li.get("title"),
             "quantity": qty,
-            "rate": round(amount_ex_gst / qty, 2),   # Ex-GST rate
-            "amount": amount_with_gst,              # With GST
+            "rate": round(original_rate_with_gst, 2),   # ✅ Original Shopify price
+            "amount": amount_with_gst,                   # With GST, after discount
             "amount_ex_gst": amount_ex_gst,
             "cgst": cgst,
             "sgst": sgst,
@@ -207,10 +202,11 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
+            # ✅ FIX: Use original Shopify price as rate
             items.append({
                 "item_name": li["title"],
                 "quantity": qty,
-                "rate": round(amount_ex_gst / qty, 2),
+                "rate": round(price, 2),  # ✅ Original price (with GST, before discount)
                 "amount": round(amount_ex_gst, 2),
                 "amount_with_gst": round(amount_with_gst, 2),
                 "gst": {
@@ -234,9 +230,8 @@ async def tally_orders_post(request: Request):
             for t in s.get("tax_lines", [])
         )
 
-# Shopify already computed the final amount
+        # Shopify already computed the final amount
         grand_total = float(raw["total_price"])
-
 
         tally_orders.append({
             "voucher_type": "Sales",
@@ -942,6 +937,7 @@ async def root(request: Request):
     </body>
     </html>
     """
+
 
 
 
