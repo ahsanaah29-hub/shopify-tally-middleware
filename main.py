@@ -60,100 +60,38 @@ def determine_delivery_channel(order):
     """
     Identify delivery channel from Shopify order data.
     
-    PRIORITY ORDER (checks in sequence):
-    1. Order tags (highest priority - manually tagged)
-    2. Customer journey / conversion data (Instagram, Facebook sessions)
-    3. Shipping company name (DTDC, BlueDart, etc.)
-    4. Note attributes (custom fields)
-    5. Source name and referring site
+    You can customize this logic based on how you identify channels in Shopify.
+    Common methods:
+    - Tags on the order
+    - Shipping method name
+    - Sales channel
+    - Order attributes
     
     Returns: 'Website', 'Marketplace', or 'Social-Media'
     """
-    # Method 1: Check order tags (HIGHEST PRIORITY)
+    # Method 1: Check order tags
     tags = order.get("tags", "").lower()
-    if "marketplace" in tags or "amazon" in tags or "flipkart" in tags or "meesho" in tags:
+    if "marketplace" in tags or "amazon" in tags or "flipkart" in tags:
         return "Marketplace"
-    if "instagram" in tags or "facebook" in tags or "whatsapp" in tags or "social" in tags:
+    if "instagram" in tags or "facebook" in tags or "whatsapp" in tags:
         return "Social-Media"
-    if "website" in tags:
-        return "Website"
     
-    # Method 2: Check customer journey data (NEW!)
-    # This captures "1st session from Instagram" type data
-    customer_journey = order.get("customer_journey_summary", {})
-    if customer_journey:
-        first_visit = customer_journey.get("first_visit", {})
-        landing_page = first_visit.get("landing_page", "").lower()
-        referrer = first_visit.get("referrer", "").lower()
-        utm_source = first_visit.get("utm_source", "").lower()
-        
-        # Check for social media sources
-        social_indicators = ["instagram", "facebook", "fb.com", "ig", "social"]
-        if any(indicator in landing_page or indicator in referrer or indicator in utm_source 
-               for indicator in social_indicators):
-            return "Social-Media"
-    
-    # Method 3: Check client details (another way Shopify tracks sources)
-    client_details = order.get("client_details", {})
-    if client_details:
-        user_agent = client_details.get("user_agent", "").lower()
-        if "instagram" in user_agent or "fban" in user_agent or "fbav" in user_agent:
-            return "Social-Media"
-    
-    # Method 4: Check landing site and referring site
-    landing_site = order.get("landing_site", "").lower()
-    referring_site = order.get("referring_site", "").lower()
-    
-    if referring_site:
-        if any(x in referring_site for x in ["instagram", "facebook", "fb.com", "ig.me"]):
-            return "Social-Media"
-        if any(x in referring_site for x in ["amazon", "flipkart", "meesho"]):
-            return "Marketplace"
-    
-    if landing_site:
-        if any(x in landing_site for x in ["instagram", "facebook", "fbclid"]):
-            return "Social-Media"
-    
-    # Method 5: Check shipping company name
-    shipping_lines = order.get("shipping_lines", [])
-    for shipping in shipping_lines:
-        shipping_title = shipping.get("title", "").lower()
-        shipping_code = shipping.get("code", "").lower()
-        
-        # If tracking number is present, you could map courier to channel
-        tracking_number = shipping.get("tracking_number", "")
-        if tracking_number:
-            # Add custom logic here if certain couriers = certain channels
-            pass
-    
-    # Method 6: Check note attributes (custom order fields)
-    note_attributes = order.get("note_attributes", [])
-    for attr in note_attributes:
-        name = attr.get("name", "").lower()
-        value = attr.get("value", "").lower()
-        if name == "channel" or name == "source":
-            if "marketplace" in value:
-                return "Marketplace"
-            if "instagram" in value or "facebook" in value or "social" in value:
-                return "Social-Media"
-            if "website" in value:
-                return "Website"
-    
-    # Method 7: Check source name
+    # Method 2: Check source name
     source_name = order.get("source_name", "").lower()
     if "web" in source_name or "online" in source_name:
         return "Website"
     if "pos" in source_name:
-        return "Website"
-    if "instagram" in source_name or "facebook" in source_name:
+        return "Website"  # or create separate POS channel
+    
+    # Method 3: Check referring site
+    referring_site = order.get("referring_site", "").lower()
+    if "instagram" in referring_site or "facebook" in referring_site:
         return "Social-Media"
     
-    # Method 8: Check customer note for channel hints
-    note = order.get("note", "").lower()
-    if "instagram" in note or "facebook" in note:
-        return "Social-Media"
-    if "amazon" in note or "marketplace" in note:
-        return "Marketplace"
+    # Method 4: Check sales channel (if using Shopify Plus)
+    source = order.get("source", "").lower()
+    if "shopify" in source:
+        return "Website"
     
     # Default to Website
     return "Website"
@@ -230,8 +168,8 @@ async def shopify_order(request: Request):
             "total_amount_ex_gst": total_ex_gst,
             "shipping_charge": shipping_charge,
             "shipping_gst": shipping_tax,
-            "payment_method": payment_method,
-            "delivery_channel": delivery_channel,
+            "payment_method": payment_method,  # ✅ NEW
+            "delivery_channel": delivery_channel,  # ✅ NEW
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
@@ -284,7 +222,7 @@ async def shopify_order(request: Request):
             "cgst": cgst,
             "sgst": sgst,
             "igst": igst,
-            "item_discount": round(discount, 2)
+            "item_discount": round(discount, 2)  # ✅ Track discount per item
         }).execute()
 
     return {"status": "stored"}
@@ -379,9 +317,9 @@ async def tally_orders_post(request: Request):
 
         grand_total = float(raw["total_price"])
 
-        # ✅ Get payment method and delivery channel from database columns
-        payment_method = o.get("payment_method") or "Prepaid"
-        delivery_channel = o.get("delivery_channel") or "Website"
+        # ✅ Determine voucher type based on payment method
+        payment_method = o.get("payment_method", "Prepaid")
+        delivery_channel = o.get("delivery_channel", "Website")
         
         voucher_type = f"Sales-{payment_method}-{delivery_channel}"
         # Example: "Sales-COD-Website", "Sales-Prepaid-Marketplace", etc.
@@ -441,171 +379,6 @@ async def tally_orders_post(request: Request):
         })
 
     return {"orders": tally_orders}
-
-
-# -------------------------------------------------
-# Auto-Sync Yesterday's Orders - Fetch delivery channel info
-# -------------------------------------------------
-@app.post("/sync/yesterday-orders")
-async def sync_yesterday_orders():
-    """
-    Fetches yesterday's orders from Shopify and updates delivery channels.
-    This handles the delay in shipping/tracking info (like DTDC).
-    
-    Run this daily via cron job or Render's cron feature.
-    """
-    from datetime import datetime, timedelta
-    
-    # Get yesterday's date
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    
-    # Fetch orders from Shopify
-    url = (
-        f"https://{SHOPIFY_STORE}.myshopify.com/"
-        f"admin/api/{SHOPIFY_API_VERSION}/orders.json"
-        f"?status=any&created_at_min={yesterday}T00:00:00Z&created_at_max={yesterday}T23:59:59Z"
-        f"&limit=250"
-    )
-    
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_TOKEN,
-        "Content-Type": "application/json"
-    }
-    
-    response = requests.get(url, headers=headers)
-    
-    if response.status_code != 200:
-        raise HTTPException(500, f"Shopify API error: {response.text}")
-    
-    shopify_orders = response.json().get("orders", [])
-    updated_count = 0
-    
-    for order in shopify_orders:
-        shopify_order_id = order.get("id")
-        
-        # Re-determine delivery channel with fresh data
-        delivery_channel = determine_delivery_channel(order)
-        payment_method = determine_payment_method(order)
-        
-        # Update in database
-        result = supabase.table("orders") \
-            .update({
-                "delivery_channel": delivery_channel,
-                "payment_method": payment_method,
-                "raw_order": order  # Update with latest data
-            }) \
-            .eq("shopify_order_id", shopify_order_id) \
-            .execute()
-        
-        if result.data:
-            updated_count += 1
-    
-    return {
-        "status": "completed",
-        "date": yesterday,
-        "orders_processed": len(shopify_orders),
-        "orders_updated": updated_count
-    }
-
-
-# -------------------------------------------------
-# Manual Update Endpoint - For DTDC delay issue
-# -------------------------------------------------
-@app.post("/update/delivery-channel")
-async def update_delivery_channel(request: Request):
-    """
-    Manually update delivery channel for specific orders.
-    Useful when shipping info arrives next day (like DTDC).
-    
-    Body: {
-        "order_number": "181074",
-        "delivery_channel": "Website"  // or "Marketplace" or "Social-Media"
-    }
-    OR
-    Body: {
-        "shopify_order_id": 7227929755785,
-        "delivery_channel": "Marketplace"
-    }
-    """
-    body = await request.json()
-    
-    order_number = body.get("order_number")
-    shopify_order_id = body.get("shopify_order_id")
-    delivery_channel = body.get("delivery_channel")
-    
-    if not delivery_channel:
-        raise HTTPException(400, "delivery_channel is required")
-    
-    if delivery_channel not in ["Website", "Marketplace", "Social-Media"]:
-        raise HTTPException(400, "delivery_channel must be Website, Marketplace, or Social-Media")
-    
-    if order_number:
-        result = supabase.table("orders") \
-            .update({"delivery_channel": delivery_channel}) \
-            .eq("order_number", str(order_number)) \
-            .execute()
-    elif shopify_order_id:
-        result = supabase.table("orders") \
-            .update({"delivery_channel": delivery_channel}) \
-            .eq("shopify_order_id", shopify_order_id) \
-            .execute()
-    else:
-        raise HTTPException(400, "Either order_number or shopify_order_id is required")
-    
-    if not result.data:
-        raise HTTPException(404, "Order not found")
-    
-    return {
-        "status": "updated",
-        "order": result.data[0]
-    }
-
-
-# -------------------------------------------------
-# Batch Update Endpoint - Update multiple orders at once
-# -------------------------------------------------
-@app.post("/update/delivery-channel-batch")
-async def update_delivery_channel_batch(request: Request):
-    """
-    Batch update delivery channels for multiple orders.
-    
-    Body: {
-        "updates": [
-            {"order_number": "181074", "delivery_channel": "Marketplace"},
-            {"order_number": "181075", "delivery_channel": "Social-Media"}
-        ]
-    }
-    """
-    body = await request.json()
-    updates = body.get("updates", [])
-    
-    if not updates:
-        raise HTTPException(400, "updates array is required")
-    
-    results = []
-    for update in updates:
-        order_number = update.get("order_number")
-        delivery_channel = update.get("delivery_channel")
-        
-        if not order_number or not delivery_channel:
-            continue
-        
-        result = supabase.table("orders") \
-            .update({"delivery_channel": delivery_channel}) \
-            .eq("order_number", str(order_number)) \
-            .execute()
-        
-        if result.data:
-            results.append({
-                "order_number": order_number,
-                "status": "updated"
-            })
-    
-    return {
-        "status": "completed",
-        "updated_count": len(results),
-        "results": results
-    }
 
 
 # -------------------------------------------------
@@ -735,57 +508,19 @@ async def root():
             h1 { color: #5c6ac4; }
             .feature { background: #f9fafb; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #5c6ac4; }
             .feature h3 { margin-top: 0; color: #202223; }
-            code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; font-size: 13px; }
-            .btn { 
-                background: #5c6ac4; 
-                color: white; 
-                padding: 12px 24px; 
-                border: none; 
-                border-radius: 6px; 
-                cursor: pointer;
-                font-size: 14px;
-                margin: 10px 5px;
-            }
-            .btn:hover { background: #4c5db8; }
-            .btn-secondary { background: #637381; }
-            .btn-secondary:hover { background: #525f6f; }
-            #syncResult { 
-                margin-top: 20px; 
-                padding: 15px; 
-                border-radius: 6px; 
-                display: none;
-            }
-            .success { background: #d4edda; color: #155724; }
-            .error { background: #f8d7da; color: #721c24; }
+            code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>👗 AINA Shopify-Tally Integration</h1>
-            <p>Advanced integration with automated delivery channel detection</p>
-            
-            <div class="feature">
-                <h3>🔄 Auto-Sync Yesterday's Orders</h3>
-                <p>Click the button below to fetch yesterday's orders from Shopify and update delivery channels based on the latest tracking and conversion data.</p>
-                <button class="btn" onclick="syncYesterdayOrders()">Sync Yesterday's Orders</button>
-                <div id="syncResult"></div>
-            </div>
+            <p>Advanced integration with client-specific requirements</p>
             
             <div class="feature">
                 <h3>✅ Voucher Classification</h3>
                 <p><strong>COD Orders:</strong> <code>Sales-COD-{Channel}</code></p>
                 <p><strong>Prepaid Orders:</strong> <code>Sales-Prepaid-{Channel}</code></p>
                 <p><strong>Channels:</strong> Website, Marketplace, Social-Media</p>
-            </div>
-            
-            <div class="feature">
-                <h3>🎯 Automatic Channel Detection</h3>
-                <p>The system automatically detects delivery channels from:</p>
-                <ul>
-                    <li><strong>Instagram/Facebook:</strong> Detected from "1st session from Instagram" and conversion data</li>
-                    <li><strong>Marketplace:</strong> Detected from referring sites (Amazon, Flipkart, etc.)</li>
-                    <li><strong>Website:</strong> Direct website orders</li>
-                </ul>
             </div>
             
             <div class="feature">
@@ -809,56 +544,8 @@ async def root():
                 <p><strong>Webhook:</strong> POST /shopify/order</p>
                 <p><strong>Fetch Orders:</strong> POST /tally/orders</p>
                 <p><strong>Create Order:</strong> POST /tally/sales</p>
-                <p><strong>Sync Yesterday:</strong> POST /sync/yesterday-orders</p>
-                <p><strong>Update Channel:</strong> POST /update/delivery-channel</p>
-                <p><strong>Batch Update:</strong> POST /update/delivery-channel-batch</p>
-            </div>
-            
-            <div class="feature">
-                <h3>⏰ Automated Daily Sync</h3>
-                <p>Set up a cron job to run daily at 2 AM:</p>
-                <code>0 2 * * * curl -X POST https://your-app.onrender.com/sync/yesterday-orders</code>
-                <p style="margin-top: 10px;"><em>This will automatically update delivery channels for yesterday's orders after tracking info becomes available.</em></p>
             </div>
         </div>
-        
-        <script>
-            async function syncYesterdayOrders() {
-                const btn = event.target;
-                const resultDiv = document.getElementById('syncResult');
-                
-                btn.disabled = true;
-                btn.textContent = '⏳ Syncing...';
-                resultDiv.style.display = 'none';
-                
-                try {
-                    const response = await fetch('/sync/yesterday-orders', {
-                        method: 'POST'
-                    });
-                    
-                    const result = await response.json();
-                    
-                    if (response.ok) {
-                        resultDiv.className = 'success';
-                        resultDiv.innerHTML = `
-                            ✅ <strong>Success!</strong><br>
-                            Date: ${result.date}<br>
-                            Orders Processed: ${result.orders_processed}<br>
-                            Orders Updated: ${result.orders_updated}
-                        `;
-                    } else {
-                        throw new Error(result.detail || 'Sync failed');
-                    }
-                } catch (error) {
-                    resultDiv.className = 'error';
-                    resultDiv.innerHTML = `❌ <strong>Error:</strong> ${error.message}`;
-                } finally {
-                    resultDiv.style.display = 'block';
-                    btn.disabled = false;
-                    btn.textContent = 'Sync Yesterday\'s Orders';
-                }
-            }
-        </script>
     </body>
     </html>
     """
