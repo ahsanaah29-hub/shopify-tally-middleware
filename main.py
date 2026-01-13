@@ -30,71 +30,60 @@ def determine_payment_method(order):
     Determine if order is COD or Prepaid.
     Returns: 'COD' or 'Prepaid'
     """
-    # Check payment gateway names
     gateway = order.get("gateway", "").lower()
     
-    # Common COD indicators in Shopify
     if "cash on delivery" in gateway or "cod" in gateway:
         return "COD"
     
-    # Check if payment is pending (usually COD)
     financial_status = order.get("financial_status", "").lower()
     if financial_status == "pending":
         return "COD"
     
-    # Check payment method details
     payment_gateway_names = order.get("payment_gateway_names", [])
     for pg in payment_gateway_names:
         if "cash" in pg.lower() or "cod" in pg.lower():
             return "COD"
     
-    # Default to Prepaid if paid or authorized
     if financial_status in ["paid", "authorized", "partially_paid"]:
         return "Prepaid"
     
-    # Default fallback
     return "Prepaid"
 
 
 def determine_delivery_channel(order):
     """
-    Identify delivery channel from Shopify order data.
+    Identify delivery channel from shipping carrier.
+    Returns: 'DTDC', 'Delhivery', 'BlueDart', or 'Pending'
     
-    You can customize this logic based on how you identify channels in Shopify.
-    Common methods:
-    - Tags on the order
-    - Shipping method name
-    - Sales channel
-    - Order attributes
-    
-    Returns: 'Website', 'Marketplace', or 'Social-Media'
+    Since carrier is assigned next day, this will return 'Pending' initially
+    and needs to be updated later.
     """
-    # Method 1: Check order tags
-    tags = order.get("tags", "").lower()
-    if "marketplace" in tags or "amazon" in tags or "flipkart" in tags:
-        return "Marketplace"
-    if "instagram" in tags or "facebook" in tags or "whatsapp" in tags:
-        return "Social-Media"
+    # Check fulfillments (where tracking companies are stored)
+    fulfillments = order.get("fulfillments", [])
+    for f in fulfillments:
+        tracking_company = f.get("tracking_company", "").lower()
+        if "dtdc" in tracking_company:
+            return "DTDC"
+        if "delhivery" in tracking_company:
+            return "Delhivery"
+        if "bluedart" in tracking_company or "blue dart" in tracking_company:
+            return "BlueDart"
     
-    # Method 2: Check source name
-    source_name = order.get("source_name", "").lower()
-    if "web" in source_name or "online" in source_name:
-        return "Website"
-    if "pos" in source_name:
-        return "Website"  # or create separate POS channel
+    # Check shipping lines
+    shipping_lines = order.get("shipping_lines", [])
+    for s in shipping_lines:
+        carrier = s.get("code", "").lower()
+        title = s.get("title", "").lower()
+        
+        if "dtdc" in carrier or "dtdc" in title:
+            return "DTDC"
+        if "delhivery" in carrier or "delhivery" in title:
+            return "Delhivery"
+        if "bluedart" in carrier or "blue dart" in carrier or "bluedart" in title or "blue dart" in title:
+            return "BlueDart"
     
-    # Method 3: Check referring site
-    referring_site = order.get("referring_site", "").lower()
-    if "instagram" in referring_site or "facebook" in referring_site:
-        return "Social-Media"
-    
-    # Method 4: Check sales channel (if using Shopify Plus)
-    source = order.get("source", "").lower()
-    if "shopify" in source:
-        return "Website"
-    
-    # Default to Website
-    return "Website"
+    # Default to Pending if carrier not assigned yet
+    return "Pending"
 
 
 # -------------------------------------------------
@@ -150,10 +139,7 @@ async def shopify_order(request: Request):
         for t in s.get("tax_lines", [])
     )
 
-    # ✅ Determine payment method (COD or Prepaid)
     payment_method = determine_payment_method(order)
-    
-    # ✅ Determine delivery channel
     delivery_channel = determine_delivery_channel(order)
 
     res = supabase.table("orders").upsert(
@@ -168,8 +154,8 @@ async def shopify_order(request: Request):
             "total_amount_ex_gst": total_ex_gst,
             "shipping_charge": shipping_charge,
             "shipping_gst": shipping_tax,
-            "payment_method": payment_method,  # ✅ NEW
-            "delivery_channel": delivery_channel,  # ✅ NEW
+            "payment_method": payment_method,
+            "delivery_channel": delivery_channel,
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
@@ -185,7 +171,6 @@ async def shopify_order(request: Request):
         qty = li.get("quantity", 0)
         price = float(li.get("price", 0))
 
-        # Sum all discounts applied to this item
         discount = sum(
             float(d["amount"])
             for d in li.get("discount_allocations", [])
@@ -194,7 +179,6 @@ async def shopify_order(request: Request):
         gross = price * qty
         amount_with_gst = round(gross - discount, 2)
 
-        # GST from Shopify
         tax_lines = li.get("tax_lines", [])
         gst_amount = sum(float(t["price"]) for t in tax_lines)
 
@@ -209,7 +193,6 @@ async def shopify_order(request: Request):
             elif t["title"] == "IGST":
                 igst = float(t["price"])
 
-        # Use original Shopify price (with GST, before discount) as rate
         original_rate_with_gst = price
 
         supabase.table("order_items").insert({
@@ -222,10 +205,102 @@ async def shopify_order(request: Request):
             "cgst": cgst,
             "sgst": sgst,
             "igst": igst,
-            "item_discount": round(discount, 2)  # ✅ Track discount per item
+            "item_discount": round(discount, 2)
         }).execute()
 
-    return {"status": "stored"}
+    return {"status": "stored", "delivery_channel": delivery_channel}
+
+
+# -------------------------------------------------
+# NEW: Update Delivery Channel (Call this webhook for fulfillments)
+# -------------------------------------------------
+@app.post("/shopify/fulfillment")
+async def shopify_fulfillment(request: Request):
+    """
+    Webhook endpoint for when Shopify fulfillment is created/updated.
+    This will be called the next day when carrier is assigned.
+    """
+    fulfillment = await request.json()
+    
+    order_id = fulfillment.get("order_id")
+    
+    if not order_id:
+        return {"status": "no_order_id"}
+    
+    # Fetch the full order from Shopify to get updated carrier info
+    url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders/{order_id}.json"
+    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+    
+    response = requests.get(url, headers=headers)
+    
+    if response.status_code != 200:
+        raise HTTPException(500, f"Failed to fetch order: {response.text}")
+    
+    order = response.json()["order"]
+    
+    # Determine delivery channel from updated order
+    delivery_channel = determine_delivery_channel(order)
+    
+    # Update database
+    supabase.table("orders") \
+        .update({
+            "delivery_channel": delivery_channel,
+            "raw_order": order
+        }) \
+        .eq("shopify_order_id", order_id) \
+        .execute()
+    
+    return {"status": "updated", "delivery_channel": delivery_channel}
+
+
+# -------------------------------------------------
+# NEW: Manual sync endpoint to update pending channels
+# -------------------------------------------------
+@app.post("/sync/delivery-channels")
+async def sync_delivery_channels():
+    """
+    Manually sync delivery channels for orders with 'Pending' status.
+    Run this daily or on-demand.
+    """
+    # Get all orders with Pending delivery channel
+    res = supabase.table("orders") \
+        .select("shopify_order_id") \
+        .eq("delivery_channel", "Pending") \
+        .execute()
+    
+    updated_count = 0
+    
+    for order_record in res.data:
+        shopify_order_id = order_record["shopify_order_id"]
+        
+        # Fetch fresh data from Shopify
+        url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders/{shopify_order_id}.json"
+        headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            continue
+        
+        order = response.json()["order"]
+        delivery_channel = determine_delivery_channel(order)
+        
+        # Only update if no longer pending
+        if delivery_channel != "Pending":
+            supabase.table("orders") \
+                .update({
+                    "delivery_channel": delivery_channel,
+                    "raw_order": order
+                }) \
+                .eq("shopify_order_id", shopify_order_id) \
+                .execute()
+            
+            updated_count += 1
+    
+    return {
+        "status": "sync_complete",
+        "updated_orders": updated_count
+    }
 
 
 # -------------------------------------------------
@@ -253,7 +328,6 @@ async def tally_orders_post(request: Request):
     for o in res.data:
         raw = o["raw_order"]
         
-        # Calculate totals
         gross_item_amount = sum(
             float(li["price"]) * li["quantity"]
             for li in raw.get("line_items", [])
@@ -284,15 +358,14 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
-            # ✅ Enhanced item structure for Tally
             items.append({
                 "item_name": li["title"],
                 "quantity": qty,
-                "rate_with_gst": round(price, 2),  # ✅ Original Shopify price (with GST)
-                "rate_ex_gst": round(amount_ex_gst / qty, 2),  # ✅ Per-unit price without GST
-                "amount_ex_gst": round(amount_ex_gst, 2),  # ✅ Total without GST
-                "amount_with_gst": round(amount_with_gst, 2),  # ✅ Total with GST
-                "discount": round(discount, 2),  # ✅ Item-level discount
+                "rate_with_gst": round(price, 2),
+                "rate_ex_gst": round(amount_ex_gst / qty, 2),
+                "amount_ex_gst": round(amount_ex_gst, 2),
+                "amount_with_gst": round(amount_with_gst, 2),
+                "discount": round(discount, 2),
                 "gst": {
                     "cgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="CGST"), 0),
                     "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
@@ -301,7 +374,6 @@ async def tally_orders_post(request: Request):
                 }
             })
 
-        # Shipping calculation
         shipping = sum(
             float(s["price"])
             for s in raw.get("shipping_lines", [])
@@ -317,18 +389,21 @@ async def tally_orders_post(request: Request):
 
         grand_total = float(raw["total_price"])
 
-        # ✅ Determine voucher type based on payment method
         payment_method = o.get("payment_method", "Prepaid")
-        delivery_channel = o.get("delivery_channel", "Website")
+        delivery_channel = o.get("delivery_channel", "Pending")
         
+        # ✅ Fixed voucher type format
         voucher_type = f"Sales-{payment_method}-{delivery_channel}"
-        # Example: "Sales-COD-Website", "Sales-Prepaid-Marketplace", etc.
+        # Examples: 
+        # "Sales-COD-DTDC"
+        # "Sales-Prepaid-Delhivery" 
+        # "Sales-COD-BlueDart"
+        # "Sales-Prepaid-Pending" (if not yet assigned)
 
         tally_orders.append({
-            # ✅ Enhanced voucher classification
             "voucher_type": voucher_type,
-            "payment_method": payment_method,  # COD or Prepaid
-            "delivery_channel": delivery_channel,  # Website, Marketplace, or Social-Media
+            "payment_method": payment_method,
+            "delivery_channel": delivery_channel,
             
             "voucher_number": o["order_number"],
             "voucher_date": o["voucher_date"],
@@ -339,28 +414,24 @@ async def tally_orders_post(request: Request):
                 "phone": o["customer_phone"]
             },
             
-            # ✅ Items with GST split
             "items": items,
             
-            # ✅ Discount classified as Direct Expense
             "direct_expenses": {
                 "sales_discount": {
                     "amount": round(discount_amount, 2),
-                    "ledger": "Sales Discount"  # Map to Tally ledger
+                    "ledger": "Sales Discount"
                 }
             },
             
-            # ✅ Shipping classified as Indirect Expense
             "indirect_expenses": {
                 "shipping_charges": {
                     "amount_ex_gst": round(shipping_ex_gst, 2),
                     "gst_amount": round(shipping_gst, 2),
                     "amount_with_gst": round(shipping, 2),
-                    "ledger": "Shipping & Handling Charges"  # Map to Tally ledger
+                    "ledger": "Shipping & Handling Charges"
                 }
             },
             
-            # Summary totals
             "summary": {
                 "gross_item_amount": round(gross_item_amount, 2),
                 "discount_amount": round(discount_amount, 2),
@@ -508,42 +579,74 @@ async def root():
             h1 { color: #5c6ac4; }
             .feature { background: #f9fafb; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #5c6ac4; }
             .feature h3 { margin-top: 0; color: #202223; }
-            code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; }
+            .warning { background: #fff4e6; border-left-color: #ff9800; }
+            code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+            ul { margin: 10px 0; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>👗 AINA Shopify-Tally Integration</h1>
-            <p>Advanced integration with client-specific requirements</p>
+            <h1>👗 AINA Shopify-Tally Integration (Fixed)</h1>
+            <p>Corrected delivery channel detection for actual shipping carriers</p>
             
             <div class="feature">
-                <h3>✅ Voucher Classification</h3>
-                <p><strong>COD Orders:</strong> <code>Sales-COD-{Channel}</code></p>
-                <p><strong>Prepaid Orders:</strong> <code>Sales-Prepaid-{Channel}</code></p>
-                <p><strong>Channels:</strong> Website, Marketplace, Social-Media</p>
+                <h3>✅ Delivery Channels (Fixed)</h3>
+                <p><strong>Actual Carriers:</strong></p>
+                <ul>
+                    <li><code>DTDC</code></li>
+                    <li><code>Delhivery</code></li>
+                    <li><code>BlueDart</code></li>
+                    <li><code>Pending</code> - when carrier not yet assigned</li>
+                </ul>
+            </div>
+            
+            <div class="feature warning">
+                <h3>⚠️ Important: Handling Next-Day Carrier Assignment</h3>
+                <p>Since carriers are assigned the next day, you need to:</p>
+                <ol>
+                    <li><strong>Set up Shopify webhook for fulfillments:</strong>
+                        <br><code>POST /shopify/fulfillment</code>
+                        <br>Topic: <code>fulfillments/create</code> or <code>fulfillments/update</code>
+                    </li>
+                    <li><strong>OR run daily sync manually:</strong>
+                        <br><code>POST /sync/delivery-channels</code>
+                        <br>This updates all "Pending" orders with current carrier info
+                    </li>
+                </ol>
             </div>
             
             <div class="feature">
-                <h3>✅ GST Split</h3>
-                <p>All items show:</p>
+                <h3>✅ Voucher Types</h3>
+                <p><strong>Format:</strong> <code>Sales-{PaymentMethod}-{Carrier}</code></p>
+                <p><strong>Examples:</strong></p>
                 <ul>
-                    <li>Rate with GST (as displayed in Shopify)</li>
-                    <li>Rate without GST (calculated)</li>
-                    <li>CGST, SGST, IGST breakup</li>
+                    <li><code>Sales-COD-DTDC</code></li>
+                    <li><code>Sales-Prepaid-Delhivery</code></li>
+                    <li><code>Sales-COD-BlueDart</code></li>
+                    <li><code>Sales-Prepaid-Pending</code> (carrier not assigned yet)</li>
                 </ul>
             </div>
             
             <div class="feature">
-                <h3>✅ Expense Classification</h3>
-                <p><strong>Direct Expenses:</strong> Sales Discounts</p>
-                <p><strong>Indirect Expenses:</strong> Shipping & Handling Charges (with GST split)</p>
+                <h3>📊 API Endpoints</h3>
+                <p><strong>Order Webhook:</strong> POST /shopify/order</p>
+                <p><strong>Fulfillment Webhook (NEW):</strong> POST /shopify/fulfillment</p>
+                <p><strong>Manual Sync (NEW):</strong> POST /sync/delivery-channels</p>
+                <p><strong>Fetch Orders:</strong> POST /tally/orders</p>
+                <p><strong>Create Order:</strong> POST /tally/sales</p>
             </div>
             
             <div class="feature">
-                <h3>📊 API Endpoints</h3>
-                <p><strong>Webhook:</strong> POST /shopify/order</p>
-                <p><strong>Fetch Orders:</strong> POST /tally/orders</p>
-                <p><strong>Create Order:</strong> POST /tally/sales</p>
+                <h3>🔧 Setup Steps</h3>
+                <ol>
+                    <li>Deploy this updated code</li>
+                    <li>In Shopify Admin → Settings → Notifications → Webhooks:
+                        <ul>
+                            <li>Add webhook for <code>fulfillments/create</code> pointing to <code>/shopify/fulfillment</code></li>
+                        </ul>
+                    </li>
+                    <li>Set up a daily cron job (optional) to call <code>/sync/delivery-channels</code></li>
+                </ol>
             </div>
         </div>
     </body>
