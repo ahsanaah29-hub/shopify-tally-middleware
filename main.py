@@ -60,38 +60,68 @@ def determine_delivery_channel(order):
     """
     Identify delivery channel from Shopify order data.
     
-    You can customize this logic based on how you identify channels in Shopify.
-    Common methods:
-    - Tags on the order
-    - Shipping method name
-    - Sales channel
-    - Order attributes
+    PRIORITY ORDER (checks in sequence):
+    1. Order tags (highest priority - you can manually tag orders)
+    2. Shipping company name (DTDC, BlueDart, etc.)
+    3. Note attributes (custom fields)
+    4. Source name
+    5. Referring site
     
     Returns: 'Website', 'Marketplace', or 'Social-Media'
     """
-    # Method 1: Check order tags
+    # Method 1: Check order tags (HIGHEST PRIORITY)
     tags = order.get("tags", "").lower()
-    if "marketplace" in tags or "amazon" in tags or "flipkart" in tags:
+    if "marketplace" in tags or "amazon" in tags or "flipkart" in tags or "meesho" in tags:
         return "Marketplace"
-    if "instagram" in tags or "facebook" in tags or "whatsapp" in tags:
+    if "instagram" in tags or "facebook" in tags or "whatsapp" in tags or "social" in tags:
         return "Social-Media"
+    if "website" in tags:
+        return "Website"
     
-    # Method 2: Check source name
+    # Method 2: Check shipping company name
+    shipping_lines = order.get("shipping_lines", [])
+    for shipping in shipping_lines:
+        shipping_title = shipping.get("title", "").lower()
+        shipping_code = shipping.get("code", "").lower()
+        
+        # Check for specific courier partners
+        if any(x in shipping_title or x in shipping_code for x in ["dtdc", "delhivery", "bluedart", "fedex"]):
+            # You can map specific couriers to channels
+            # For now, treat all courier orders as Website
+            pass
+    
+    # Method 3: Check note attributes (custom order fields)
+    note_attributes = order.get("note_attributes", [])
+    for attr in note_attributes:
+        name = attr.get("name", "").lower()
+        value = attr.get("value", "").lower()
+        if name == "channel" or name == "source":
+            if "marketplace" in value:
+                return "Marketplace"
+            if "instagram" in value or "facebook" in value or "social" in value:
+                return "Social-Media"
+            if "website" in value:
+                return "Website"
+    
+    # Method 4: Check source name
     source_name = order.get("source_name", "").lower()
     if "web" in source_name or "online" in source_name:
         return "Website"
     if "pos" in source_name:
-        return "Website"  # or create separate POS channel
-    
-    # Method 3: Check referring site
-    referring_site = order.get("referring_site", "").lower()
-    if "instagram" in referring_site or "facebook" in referring_site:
-        return "Social-Media"
-    
-    # Method 4: Check sales channel (if using Shopify Plus)
-    source = order.get("source", "").lower()
-    if "shopify" in source:
         return "Website"
+    
+    # Method 5: Check referring site
+    referring_site = order.get("referring_site", "").lower()
+    if referring_site:
+        if "instagram" in referring_site or "facebook" in referring_site:
+            return "Social-Media"
+    
+    # Method 6: Check customer note for channel hints
+    note = order.get("note", "").lower()
+    if "instagram" in note or "facebook" in note:
+        return "Social-Media"
+    if "amazon" in note or "marketplace" in note:
+        return "Marketplace"
     
     # Default to Website
     return "Website"
@@ -168,8 +198,8 @@ async def shopify_order(request: Request):
             "total_amount_ex_gst": total_ex_gst,
             "shipping_charge": shipping_charge,
             "shipping_gst": shipping_tax,
-            "payment_method": payment_method,  # ✅ NEW
-            "delivery_channel": delivery_channel,  # ✅ NEW
+            "payment_method": payment_method,
+            "delivery_channel": delivery_channel,
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
@@ -222,7 +252,7 @@ async def shopify_order(request: Request):
             "cgst": cgst,
             "sgst": sgst,
             "igst": igst,
-            "item_discount": round(discount, 2)  # ✅ Track discount per item
+            "item_discount": round(discount, 2)
         }).execute()
 
     return {"status": "stored"}
@@ -317,9 +347,9 @@ async def tally_orders_post(request: Request):
 
         grand_total = float(raw["total_price"])
 
-        # ✅ Determine voucher type based on payment method
-        payment_method = o.get("payment_method", "Prepaid")
-        delivery_channel = o.get("delivery_channel", "Website")
+        # ✅ Get payment method and delivery channel from database columns
+        payment_method = o.get("payment_method") or "Prepaid"
+        delivery_channel = o.get("delivery_channel") or "Website"
         
         voucher_type = f"Sales-{payment_method}-{delivery_channel}"
         # Example: "Sales-COD-Website", "Sales-Prepaid-Marketplace", etc.
@@ -379,6 +409,106 @@ async def tally_orders_post(request: Request):
         })
 
     return {"orders": tally_orders}
+
+
+# -------------------------------------------------
+# Manual Update Endpoint - For DTDC delay issue
+# -------------------------------------------------
+@app.post("/update/delivery-channel")
+async def update_delivery_channel(request: Request):
+    """
+    Manually update delivery channel for specific orders.
+    Useful when shipping info arrives next day (like DTDC).
+    
+    Body: {
+        "order_number": "181074",
+        "delivery_channel": "Website"  // or "Marketplace" or "Social-Media"
+    }
+    OR
+    Body: {
+        "shopify_order_id": 7227929755785,
+        "delivery_channel": "Marketplace"
+    }
+    """
+    body = await request.json()
+    
+    order_number = body.get("order_number")
+    shopify_order_id = body.get("shopify_order_id")
+    delivery_channel = body.get("delivery_channel")
+    
+    if not delivery_channel:
+        raise HTTPException(400, "delivery_channel is required")
+    
+    if delivery_channel not in ["Website", "Marketplace", "Social-Media"]:
+        raise HTTPException(400, "delivery_channel must be Website, Marketplace, or Social-Media")
+    
+    if order_number:
+        result = supabase.table("orders") \
+            .update({"delivery_channel": delivery_channel}) \
+            .eq("order_number", str(order_number)) \
+            .execute()
+    elif shopify_order_id:
+        result = supabase.table("orders") \
+            .update({"delivery_channel": delivery_channel}) \
+            .eq("shopify_order_id", shopify_order_id) \
+            .execute()
+    else:
+        raise HTTPException(400, "Either order_number or shopify_order_id is required")
+    
+    if not result.data:
+        raise HTTPException(404, "Order not found")
+    
+    return {
+        "status": "updated",
+        "order": result.data[0]
+    }
+
+
+# -------------------------------------------------
+# Batch Update Endpoint - Update multiple orders at once
+# -------------------------------------------------
+@app.post("/update/delivery-channel-batch")
+async def update_delivery_channel_batch(request: Request):
+    """
+    Batch update delivery channels for multiple orders.
+    
+    Body: {
+        "updates": [
+            {"order_number": "181074", "delivery_channel": "Marketplace"},
+            {"order_number": "181075", "delivery_channel": "Social-Media"}
+        ]
+    }
+    """
+    body = await request.json()
+    updates = body.get("updates", [])
+    
+    if not updates:
+        raise HTTPException(400, "updates array is required")
+    
+    results = []
+    for update in updates:
+        order_number = update.get("order_number")
+        delivery_channel = update.get("delivery_channel")
+        
+        if not order_number or not delivery_channel:
+            continue
+        
+        result = supabase.table("orders") \
+            .update({"delivery_channel": delivery_channel}) \
+            .eq("order_number", str(order_number)) \
+            .execute()
+        
+        if result.data:
+            results.append({
+                "order_number": order_number,
+                "status": "updated"
+            })
+    
+    return {
+        "status": "completed",
+        "updated_count": len(results),
+        "results": results
+    }
 
 
 # -------------------------------------------------
