@@ -369,6 +369,56 @@ async def sync_delivery_channels():
 
 
 # -------------------------------------------------
+# NEW: Fix old orders with wrong channels (Website, Marketplace, Social-Media)
+# -------------------------------------------------
+@app.post("/fix/old-orders")
+async def fix_old_orders():
+    """
+    Reset all orders that have incorrect delivery channels from old code.
+    Changes "Website", "Marketplace", "Social-Media" → "Pending"
+    
+    Then you can either:
+    1. Let staff add tags manually
+    2. Run sync to re-detect from Shopify data
+    """
+    # Get orders with old wrong channels
+    wrong_channels = ["Website", "Marketplace", "Social-Media"]
+    
+    total_fixed = 0
+    
+    for wrong_channel in wrong_channels:
+        res = supabase.table("orders") \
+            .select("id, order_number, raw_order") \
+            .eq("delivery_channel", wrong_channel) \
+            .execute()
+        
+        for order_record in res.data:
+            # Re-check the raw_order data with new logic
+            raw_order = order_record.get("raw_order", {})
+            
+            if raw_order:
+                # Use the new detection logic
+                new_channel = determine_delivery_channel(raw_order)
+            else:
+                # If no raw_order, default to Pending
+                new_channel = "Pending"
+            
+            # Update the order
+            supabase.table("orders") \
+                .update({"delivery_channel": new_channel}) \
+                .eq("id", order_record["id"]) \
+                .execute()
+            
+            total_fixed += 1
+    
+    return {
+        "status": "fix_complete",
+        "total_orders_fixed": total_fixed,
+        "message": "Old orders updated. Orders without carrier info are now 'Pending'."
+    }
+
+
+# -------------------------------------------------
 # Tally → Fetch Orders (Enhanced for Client Requirements)
 # -------------------------------------------------
 @app.post("/tally/orders")
