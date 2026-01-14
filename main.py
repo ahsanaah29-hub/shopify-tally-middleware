@@ -55,10 +55,22 @@ def determine_delivery_channel(order):
     Identify delivery channel from shipping carrier.
     Returns: 'DTDC', 'Delhivery', 'BlueDart', or 'Pending'
     
-    Since carrier is assigned next day, this will return 'Pending' initially
-    and needs to be updated later.
+    Checks multiple sources:
+    1. Order tags (e.g., "carrier:DTDC")
+    2. Fulfillment tracking company
+    3. Shipping line details
+    4. Order notes/attributes
     """
-    # Check fulfillments (where tracking companies are stored)
+    # Method 1: Check order tags (EASIEST - no API needed!)
+    tags = order.get("tags", "").lower()
+    if "dtdc" in tags or "carrier:dtdc" in tags:
+        return "DTDC"
+    if "delhivery" in tags or "carrier:delhivery" in tags:
+        return "Delhivery"
+    if "bluedart" in tags or "blue dart" in tags or "carrier:bluedart" in tags:
+        return "BlueDart"
+    
+    # Method 2: Check fulfillments (tracking companies)
     fulfillments = order.get("fulfillments", [])
     for f in fulfillments:
         tracking_company = f.get("tracking_company", "").lower()
@@ -69,7 +81,7 @@ def determine_delivery_channel(order):
         if "bluedart" in tracking_company or "blue dart" in tracking_company:
             return "BlueDart"
     
-    # Check shipping lines
+    # Method 3: Check shipping lines
     shipping_lines = order.get("shipping_lines", [])
     for s in shipping_lines:
         carrier = s.get("code", "").lower()
@@ -82,7 +94,27 @@ def determine_delivery_channel(order):
         if "bluedart" in carrier or "blue dart" in carrier or "bluedart" in title or "blue dart" in title:
             return "BlueDart"
     
-    # Default to Pending if carrier not assigned yet
+    # Method 4: Check order notes
+    note = order.get("note", "").lower()
+    if "dtdc" in note:
+        return "DTDC"
+    if "delhivery" in note:
+        return "Delhivery"
+    if "bluedart" in note or "blue dart" in note:
+        return "BlueDart"
+    
+    # Method 5: Check note attributes (custom fields)
+    note_attributes = order.get("note_attributes", [])
+    for attr in note_attributes:
+        value = str(attr.get("value", "")).lower()
+        if "dtdc" in value:
+            return "DTDC"
+        if "delhivery" in value:
+            return "Delhivery"
+        if "bluedart" in value or "blue dart" in value:
+            return "BlueDart"
+    
+    # Default to Pending if carrier not identified
     return "Pending"
 
 
@@ -91,6 +123,12 @@ def determine_delivery_channel(order):
 # -------------------------------------------------
 @app.post("/shopify/order")
 async def shopify_order(request: Request):
+    """
+    Webhook for order creation AND updates (including when tags are added).
+    This fires multiple times:
+    1. When order is created
+    2. When order is updated (tags, fulfillment, etc.)
+    """
     order = await request.json()
 
     customer = order.get("customer") or {}
@@ -140,8 +178,11 @@ async def shopify_order(request: Request):
     )
 
     payment_method = determine_payment_method(order)
+    
+    # ✅ This will now detect tags like "carrier:DTDC"
     delivery_channel = determine_delivery_channel(order)
 
+    # ✅ UPSERT: Creates new order OR updates existing one (when tags are added)
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -155,16 +196,17 @@ async def shopify_order(request: Request):
             "shipping_charge": shipping_charge,
             "shipping_gst": shipping_tax,
             "payment_method": payment_method,
-            "delivery_channel": delivery_channel,
+            "delivery_channel": delivery_channel,  # ✅ Updates when tags change!
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
-            "raw_order": order
+            "raw_order": order  # ✅ Stores latest order data with tags
         },
         on_conflict="shopify_order_id"
     ).execute()
 
     order_id = res.data[0]["id"]
 
+    # Delete and recreate items (in case quantities changed)
     supabase.table("order_items").delete().eq("order_id", order_id).execute()
 
     for li in order.get("line_items", []):
@@ -208,7 +250,11 @@ async def shopify_order(request: Request):
             "item_discount": round(discount, 2)
         }).execute()
 
-    return {"status": "stored", "delivery_channel": delivery_channel}
+    return {
+        "status": "stored", 
+        "delivery_channel": delivery_channel,
+        "order_number": order.get("order_number")
+    }
 
 
 # -------------------------------------------------
@@ -220,37 +266,56 @@ async def shopify_fulfillment(request: Request):
     Webhook endpoint for when Shopify fulfillment is created/updated.
     This will be called the next day when carrier is assigned.
     """
-    fulfillment = await request.json()
-    
-    order_id = fulfillment.get("order_id")
-    
-    if not order_id:
-        return {"status": "no_order_id"}
-    
-    # Fetch the full order from Shopify to get updated carrier info
-    url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders/{order_id}.json"
-    headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
-    
-    response = requests.get(url, headers=headers)
-    
-    if response.status_code != 200:
-        raise HTTPException(500, f"Failed to fetch order: {response.text}")
-    
-    order = response.json()["order"]
-    
-    # Determine delivery channel from updated order
-    delivery_channel = determine_delivery_channel(order)
-    
-    # Update database
-    supabase.table("orders") \
-        .update({
+    try:
+        fulfillment = await request.json()
+        
+        # The fulfillment webhook sends order_id
+        order_id = fulfillment.get("order_id")
+        
+        if not order_id:
+            return {"status": "error", "message": "no_order_id in webhook payload"}
+        
+        # Check if required env vars are set
+        if not SHOPIFY_STORE or not SHOPIFY_TOKEN:
+            raise HTTPException(500, "SHOPIFY_STORE or SHOPIFY_TOKEN not configured")
+        
+        # Fetch the full order from Shopify to get updated carrier info
+        url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders/{order_id}.json"
+        headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
+        
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            raise HTTPException(500, f"Failed to fetch order from Shopify: {response.text}")
+        
+        order = response.json()["order"]
+        
+        # Determine delivery channel from updated order
+        delivery_channel = determine_delivery_channel(order)
+        
+        # Update database
+        result = supabase.table("orders") \
+            .update({
+                "delivery_channel": delivery_channel,
+                "raw_order": order
+            }) \
+            .eq("shopify_order_id", order_id) \
+            .execute()
+        
+        return {
+            "status": "success",
+            "order_id": order_id,
             "delivery_channel": delivery_channel,
-            "raw_order": order
-        }) \
-        .eq("shopify_order_id", order_id) \
-        .execute()
+            "updated": len(result.data) > 0
+        }
     
-    return {"status": "updated", "delivery_channel": delivery_channel}
+    except Exception as e:
+        # Log the error but don't crash
+        print(f"Error in fulfillment webhook: {str(e)}")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
 # -------------------------------------------------
@@ -558,12 +623,50 @@ def shopify_callback(code: str, shop: str):
 
     data = response.json()
     access_token = data.get("access_token")
+    
+    # ✅ SAVE TOKEN TO DATABASE
+    if access_token:
+        supabase.table("shopify_tokens").upsert({
+            "shop": shop,
+            "access_token": access_token,
+            "created_at": "now()"
+        }, on_conflict="shop").execute()
 
-    return {
-        "status": "app_installed",
-        "shop": shop,
-        "access_token_received": bool(access_token)
-    }
+    # ✅ DISPLAY TOKEN SO YOU CAN COPY IT
+    return HTMLResponse(f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>App Installed Successfully!</title>
+        <style>
+            body {{ font-family: Arial; padding: 40px; background: #f0f0f0; }}
+            .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; }}
+            .success {{ color: #00b300; font-size: 24px; margin-bottom: 20px; }}
+            .token {{ background: #f5f5f5; padding: 15px; border-radius: 5px; word-break: break-all; font-family: monospace; }}
+            .warning {{ background: #fff3cd; padding: 15px; border-radius: 5px; margin-top: 20px; border-left: 4px solid #ffc107; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="success">✅ App Installed Successfully!</div>
+            <p><strong>Shop:</strong> {shop}</p>
+            <p><strong>Access Token (SAVE THIS!):</strong></p>
+            <div class="token">{access_token}</div>
+            
+            <div class="warning">
+                <strong>⚠️ IMPORTANT:</strong>
+                <ol>
+                    <li>Copy the access token above</li>
+                    <li>Go to your Render dashboard</li>
+                    <li>Add environment variable: <code>SHOPIFY_ACCESS_TOKEN={access_token}</code></li>
+                    <li>Extract store name from shop URL and add: <code>SHOPIFY_STORE_NAME=(store-name-only)</code></li>
+                    <li>Save and redeploy</li>
+                </ol>
+            </div>
+        </div>
+    </body>
+    </html>
+    """)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -575,78 +678,127 @@ async def root():
         <title>AINA - Shopify-Tally Integration</title>
         <style>
             body { font-family: Arial; padding: 40px; background: #f5f5f5; }
-            .container { max-width: 1000px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; }
+            .container { max-width: 1200px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; }
             h1 { color: #5c6ac4; }
             .feature { background: #f9fafb; padding: 20px; margin: 20px 0; border-radius: 8px; border-left: 4px solid #5c6ac4; }
             .feature h3 { margin-top: 0; color: #202223; }
+            .workflow { background: #e8f5e9; border-left-color: #4caf50; }
             .warning { background: #fff4e6; border-left-color: #ff9800; }
             code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
             ul { margin: 10px 0; }
+            .steps { background: #fff; padding: 15px; border-radius: 5px; border: 1px solid #ddd; margin: 10px 0; }
+            .day { font-weight: bold; color: #5c6ac4; margin-top: 15px; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>👗 AINA Shopify-Tally Integration (Fixed)</h1>
-            <p>Corrected delivery channel detection for actual shipping carriers</p>
+            <h1>👗 AINA Shopify-Tally Integration</h1>
+            <p>Automated delivery channel detection via order tags</p>
             
-            <div class="feature">
-                <h3>✅ Delivery Channels (Fixed)</h3>
-                <p><strong>Actual Carriers:</strong></p>
-                <ul>
-                    <li><code>DTDC</code></li>
-                    <li><code>Delhivery</code></li>
-                    <li><code>BlueDart</code></li>
-                    <li><code>Pending</code> - when carrier not yet assigned</li>
-                </ul>
+            <div class="feature workflow">
+                <h3>📅 Daily Workflow (How It Works)</h3>
+                
+                <div class="day">Day 1 (Jan 14) - Order Placed:</div>
+                <div class="steps">
+                    1. Customer places order<br>
+                    2. Webhook fires → Order saved with <code>delivery_channel: "Pending"</code><br>
+                    3. Order fulfilled but carrier not assigned yet
+                </div>
+                
+                <div class="day">Day 2 (Jan 15) - Carrier Assigned:</div>
+                <div class="steps">
+                    1. Staff assigns carrier (DTDC/Delhivery/BlueDart)<br>
+                    2. <strong>Staff adds tag to order</strong> (see instructions below)<br>
+                    3. Webhook fires → Database automatically updates with correct carrier!
+                </div>
+                
+                <div class="day">Day 3 (Jan 16) - Tally Sync:</div>
+                <div class="steps">
+                    1. Tally calls API for yesterday's orders (Jan 14)<br>
+                    2. ✅ <strong>Response includes correct carrier</strong> (tags were added on Jan 15)<br>
+                    3. Data syncs to Tally with proper voucher types
+                </div>
             </div>
             
-            <div class="feature warning">
-                <h3>⚠️ Important: Handling Next-Day Carrier Assignment</h3>
-                <p>Since carriers are assigned the next day, you need to:</p>
+            <div class="feature">
+                <h3>🏷️ How to Add Carrier Tags (For Staff)</h3>
+                
+                <p><strong>Method 1: Single Order</strong></p>
                 <ol>
-                    <li><strong>Set up Shopify webhook for fulfillments:</strong>
-                        <br><code>POST /shopify/fulfillment</code>
-                        <br>Topic: <code>fulfillments/create</code> or <code>fulfillments/update</code>
+                    <li>Open the order in Shopify Admin</li>
+                    <li>Scroll down to "Tags" section (right sidebar)</li>
+                    <li>Type one of these exact tags:
+                        <ul>
+                            <li><code>carrier:DTDC</code></li>
+                            <li><code>carrier:Delhivery</code></li>
+                            <li><code>carrier:BlueDart</code></li>
+                        </ul>
                     </li>
-                    <li><strong>OR run daily sync manually:</strong>
-                        <br><code>POST /sync/delivery-channels</code>
-                        <br>This updates all "Pending" orders with current carrier info
-                    </li>
+                    <li>Press Enter</li>
+                    <li>Click "Save" (top right corner)</li>
+                </ol>
+                
+                <p><strong>Method 2: Bulk Tagging (Faster for Multiple Orders)</strong></p>
+                <ol>
+                    <li>Go to Orders page</li>
+                    <li>Select multiple orders using checkboxes</li>
+                    <li>Click "More actions" dropdown</li>
+                    <li>Select "Add tags"</li>
+                    <li>Enter carrier tag (e.g., <code>carrier:DTDC</code>)</li>
+                    <li>Apply to all selected orders</li>
                 </ol>
             </div>
             
+            <div class="feature warning">
+                <h3>⚠️ Important: Webhook Setup Required</h3>
+                <p>Make sure you have BOTH webhooks configured:</p>
+                <ol>
+                    <li><strong>Order creation:</strong> <code>POST /shopify/order</code> (✅ Already set up)</li>
+                    <li><strong>Order updated:</strong> <code>POST /shopify/order</code> (⭐ Must add this!)</li>
+                </ol>
+                <p>Both should point to: <code>https://shopify-tally-middleware.onrender.com/shopify/order</code></p>
+            </div>
+            
             <div class="feature">
-                <h3>✅ Voucher Types</h3>
+                <h3>✅ Voucher Classification</h3>
                 <p><strong>Format:</strong> <code>Sales-{PaymentMethod}-{Carrier}</code></p>
                 <p><strong>Examples:</strong></p>
                 <ul>
                     <li><code>Sales-COD-DTDC</code></li>
                     <li><code>Sales-Prepaid-Delhivery</code></li>
                     <li><code>Sales-COD-BlueDart</code></li>
-                    <li><code>Sales-Prepaid-Pending</code> (carrier not assigned yet)</li>
+                    <li><code>Sales-Prepaid-Pending</code> (if tag not added yet)</li>
+                </ul>
+            </div>
+            
+            <div class="feature">
+                <h3>✅ Client Requirements Met</h3>
+                <ul>
+                    <li>✅ COD vs Prepaid classification</li>
+                    <li>✅ Sales discounts under Direct Expenses</li>
+                    <li>✅ Shipping charges under Indirect Expenses</li>
+                    <li>✅ GST split (rate with GST + rate without GST)</li>
+                    <li>✅ CGST, SGST, IGST breakdown</li>
+                    <li>✅ Three delivery channels for debtor tracking</li>
                 </ul>
             </div>
             
             <div class="feature">
                 <h3>📊 API Endpoints</h3>
-                <p><strong>Order Webhook:</strong> POST /shopify/order</p>
-                <p><strong>Fulfillment Webhook (NEW):</strong> POST /shopify/fulfillment</p>
-                <p><strong>Manual Sync (NEW):</strong> POST /sync/delivery-channels</p>
-                <p><strong>Fetch Orders:</strong> POST /tally/orders</p>
-                <p><strong>Create Order:</strong> POST /tally/sales</p>
+                <p><strong>Order Webhook:</strong> POST /shopify/order (handles create AND update)</p>
+                <p><strong>Fetch Orders for Tally:</strong> POST /tally/orders</p>
+                <p><strong>Create Order in Shopify:</strong> POST /tally/sales</p>
             </div>
             
             <div class="feature">
-                <h3>🔧 Setup Steps</h3>
-                <ol>
-                    <li>Deploy this updated code</li>
-                    <li>In Shopify Admin → Settings → Notifications → Webhooks:
-                        <ul>
-                            <li>Add webhook for <code>fulfillments/create</code> pointing to <code>/shopify/fulfillment</code></li>
-                        </ul>
-                    </li>
-                    <li>Set up a daily cron job (optional) to call <code>/sync/delivery-channels</code></li>
-                </ol>
+                <h3>💡 Tips for Best Results</h3>
+                <ul>
+                    <li>Add tags <strong>every morning</strong> for yesterday's fulfilled orders</li>
+                    <li>Use exact tag format: <code>carrier:DTDC</code> (case-sensitive)</li>
+                    <li>Tags can be added immediately after fulfillment or next day</li>
+                    <li>If tag is missed, add it anytime - it will update in database automatically</li>
+                    <li>Tally should sync orders from yesterday (not today) to get tagged orders</li>
+                </ul>
             </div>
         </div>
     </body>
