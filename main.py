@@ -62,7 +62,7 @@ def determine_delivery_channel(order):
     4. Order notes/attributes
     """
     # Method 1: Check order tags (EASIEST - no API needed!)
-    tags = order.get("tags", "").lower()
+    tags = (order.get("tags") or "").lower()
     if "dtdc" in tags or "carrier:dtdc" in tags:
         return "DTDC"
     if "delhivery" in tags or "carrier:delhivery" in tags:
@@ -71,9 +71,9 @@ def determine_delivery_channel(order):
         return "BlueDart"
     
     # Method 2: Check fulfillments (tracking companies)
-    fulfillments = order.get("fulfillments", [])
+    fulfillments = order.get("fulfillments") or []
     for f in fulfillments:
-        tracking_company = f.get("tracking_company", "").lower()
+        tracking_company = (f.get("tracking_company") or "").lower()
         if "dtdc" in tracking_company:
             return "DTDC"
         if "delhivery" in tracking_company:
@@ -82,10 +82,10 @@ def determine_delivery_channel(order):
             return "BlueDart"
     
     # Method 3: Check shipping lines
-    shipping_lines = order.get("shipping_lines", [])
+    shipping_lines = order.get("shipping_lines") or []
     for s in shipping_lines:
-        carrier = s.get("code", "").lower()
-        title = s.get("title", "").lower()
+        carrier = (s.get("code") or "").lower()
+        title = (s.get("title") or "").lower()
         
         if "dtdc" in carrier or "dtdc" in title:
             return "DTDC"
@@ -95,7 +95,7 @@ def determine_delivery_channel(order):
             return "BlueDart"
     
     # Method 4: Check order notes
-    note = order.get("note", "").lower()
+    note = (order.get("note") or "").lower()
     if "dtdc" in note:
         return "DTDC"
     if "delhivery" in note:
@@ -104,9 +104,9 @@ def determine_delivery_channel(order):
         return "BlueDart"
     
     # Method 5: Check note attributes (custom fields)
-    note_attributes = order.get("note_attributes", [])
+    note_attributes = order.get("note_attributes") or []
     for attr in note_attributes:
-        value = str(attr.get("value", "")).lower()
+        value = str(attr.get("value") or "").lower()
         if "dtdc" in value:
             return "DTDC"
         if "delhivery" in value:
