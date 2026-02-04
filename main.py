@@ -531,30 +531,19 @@ async def tally_orders_post(request: Request):
             
             "items": items,
             
-            "direct_expenses": {
-                "sales_discount": {
-                    "amount": round(discount_amount, 2),
-                    "ledger": "Sales Discount"
-                }
-            },
-            
-            "indirect_expenses": {
-                "shipping_charges": {
-                    "amount_ex_gst": round(shipping_ex_gst, 2),
-                    "gst_amount": round(shipping_gst, 2),
-                    "amount_with_gst": round(shipping, 2),
-                    "ledger": "Shipping & Handling Charges"
-                }
-            },
-            
+            # ✅ FLATTENED EXPENSES INTO SUMMARY
             "gross_item_amount": round(gross_item_amount, 2),
             "discount_amount": round(discount_amount, 2),
             "net_item_amount": round(net_item_amount, 2),
-            "total_ex_gst": round(total_ex_gst, 2),
-            "total_gst": round(total_gst + shipping_gst, 2),
-            "total_with_gst": round(net_item_amount, 2),
+            
             "shipping_ex_gst": round(shipping_ex_gst, 2),
             "shipping_gst": round(shipping_gst, 2),
+            "shipping_with_gst": round(shipping, 2),
+            
+            "total_ex_gst": round(total_ex_gst, 2),
+            "total_gst": round(total_gst + shipping_gst, 2),
+            "total_with_gst": round(grand_total, 2),
+            
             "grand_total": round(grand_total, 2),
             
             "currency": o["currency"],
@@ -823,8 +812,8 @@ async def root():
                 <h3>✅ Client Requirements Met</h3>
                 <ul>
                     <li>✅ COD vs Prepaid classification</li>
-                    <li>✅ Sales discounts under Direct Expenses</li>
-                    <li>✅ Shipping charges under Indirect Expenses</li>
+                    <li>✅ Sales discounts in summary (removed nested structure)</li>
+                    <li>✅ Shipping charges in summary (removed nested structure)</li>
                     <li>✅ GST split (rate with GST + rate without GST)</li>
                     <li>✅ CGST, SGST, IGST breakdown</li>
                     <li>✅ Three delivery channels for debtor tracking</li>
