@@ -547,17 +547,15 @@ async def tally_orders_post(request: Request):
                 }
             },
             
-            "summary": {
-                "gross_item_amount": round(gross_item_amount, 2),
-                "discount_amount": round(discount_amount, 2),
-                "net_item_amount": round(net_item_amount, 2),
-                "total_ex_gst": round(total_ex_gst, 2),
-                "total_gst": round(total_gst + shipping_gst, 2),
-                "total_with_gst": round(net_item_amount, 2),
-                "shipping_ex_gst": round(shipping_ex_gst, 2),
-                "shipping_gst": round(shipping_gst, 2),
-                "grand_total": round(grand_total, 2)
-            },
+            "gross_item_amount": round(gross_item_amount, 2),
+            "discount_amount": round(discount_amount, 2),
+            "net_item_amount": round(net_item_amount, 2),
+            "total_ex_gst": round(total_ex_gst, 2),
+            "total_gst": round(total_gst + shipping_gst, 2),
+            "total_with_gst": round(net_item_amount, 2),
+            "shipping_ex_gst": round(shipping_ex_gst, 2),
+            "shipping_gst": round(shipping_gst, 2),
+            "grand_total": round(grand_total, 2),
             
             "currency": o["currency"],
             "source": o["source"],
