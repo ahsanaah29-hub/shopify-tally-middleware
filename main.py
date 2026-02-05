@@ -25,6 +25,43 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -------------------------------------------------
 # Helper Functions
 # -------------------------------------------------
+def determine_order_type(order):
+    """
+    Determine order type: 'sales', 'cancelled', or 'return'
+    
+    Logic:
+    - If order is cancelled → 'cancelled'
+    - If order has returns → 'return'
+    - Otherwise → 'sales'
+    """
+    # Check if order is cancelled
+    cancel_reason = order.get("cancel_reason")
+    cancelled_at = order.get("cancelled_at")
+    
+    if cancel_reason or cancelled_at:
+        return "cancelled"
+    
+    # Check if order has returns (via fulfillment status or return data)
+    fulfillments = order.get("fulfillments", [])
+    for f in fulfillments:
+        status = (f.get("status") or "").lower()
+        if status == "returned" or "return" in status.lower():
+            return "return"
+    
+    # Check order tags for return indication
+    tags = (order.get("tags") or "").lower()
+    if "return" in tags or "returned" in tags:
+        return "return"
+    
+    # Check note for return indication
+    note = (order.get("note") or "").lower()
+    if "return" in note or "returned" in note:
+        return "return"
+    
+    # Default to sales
+    return "sales"
+
+
 def determine_payment_method(order):
     """
     Determine if order is COD or Prepaid.
@@ -127,7 +164,7 @@ async def shopify_order(request: Request):
     Webhook for order creation AND updates (including when tags are added).
     This fires multiple times:
     1. When order is created
-    2. When order is updated (tags, fulfillment, etc.)
+    2. When order is updated (tags, fulfillment, cancelled, etc.)
     """
     order = await request.json()
 
@@ -178,11 +215,10 @@ async def shopify_order(request: Request):
     )
 
     payment_method = determine_payment_method(order)
-    
-    # ✅ This will now detect tags like "carrier:DTDC"
     delivery_channel = determine_delivery_channel(order)
+    order_type = determine_order_type(order)  # ✅ NEW: Determine order type
 
-    # ✅ UPSERT: Creates new order OR updates existing one (when tags are added)
+    # ✅ UPSERT: Creates new order OR updates existing one (when tags are added, cancelled, returned, etc.)
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -196,10 +232,11 @@ async def shopify_order(request: Request):
             "shipping_charge": shipping_charge,
             "shipping_gst": shipping_tax,
             "payment_method": payment_method,
-            "delivery_channel": delivery_channel,  # ✅ Updates when tags change!
+            "delivery_channel": delivery_channel,
+            "type": order_type,  # ✅ NEW: Store order type (sales, cancelled, return)
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
-            "raw_order": order  # ✅ Stores latest order data with tags
+            "raw_order": order
         },
         on_conflict="shopify_order_id"
     ).execute()
@@ -253,6 +290,7 @@ async def shopify_order(request: Request):
     return {
         "status": "stored", 
         "delivery_channel": delivery_channel,
+        "order_type": order_type,  # ✅ NEW: Return order type
         "order_number": order.get("order_number")
     }
 
@@ -292,11 +330,13 @@ async def shopify_fulfillment(request: Request):
         
         # Determine delivery channel from updated order
         delivery_channel = determine_delivery_channel(order)
+        order_type = determine_order_type(order)  # ✅ NEW: Check order type
         
         # Update database
         result = supabase.table("orders") \
             .update({
                 "delivery_channel": delivery_channel,
+                "type": order_type,  # ✅ NEW: Update order type
                 "raw_order": order
             }) \
             .eq("shopify_order_id", order_id) \
@@ -306,6 +346,7 @@ async def shopify_fulfillment(request: Request):
             "status": "success",
             "order_id": order_id,
             "delivery_channel": delivery_channel,
+            "order_type": order_type,  # ✅ NEW: Return order type
             "updated": len(result.data) > 0
         }
     
@@ -325,6 +366,7 @@ async def shopify_fulfillment(request: Request):
 async def sync_delivery_channels():
     """
     Manually sync delivery channels for orders with 'Pending' status.
+    Also updates order types (cancelled, sales, return).
     Run this daily or on-demand.
     """
     # Get all orders with Pending delivery channel
@@ -349,12 +391,14 @@ async def sync_delivery_channels():
         
         order = response.json()["order"]
         delivery_channel = determine_delivery_channel(order)
+        order_type = determine_order_type(order)  # ✅ NEW: Update type as well
         
         # Only update if no longer pending
         if delivery_channel != "Pending":
             supabase.table("orders") \
                 .update({
                     "delivery_channel": delivery_channel,
+                    "type": order_type,  # ✅ NEW: Update type
                     "raw_order": order
                 }) \
                 .eq("shopify_order_id", shopify_order_id) \
@@ -376,6 +420,7 @@ async def fix_old_orders():
     """
     Reset all orders that have incorrect delivery channels from old code.
     Changes "Website", "Marketplace", "Social-Media" → "Pending"
+    Also sets order type based on current Shopify data.
     
     Then you can either:
     1. Let staff add tags manually
@@ -399,13 +444,18 @@ async def fix_old_orders():
             if raw_order:
                 # Use the new detection logic
                 new_channel = determine_delivery_channel(raw_order)
+                new_type = determine_order_type(raw_order)  # ✅ NEW: Set type
             else:
-                # If no raw_order, default to Pending
+                # If no raw_order, default to Pending and sales
                 new_channel = "Pending"
+                new_type = "sales"
             
             # Update the order
             supabase.table("orders") \
-                .update({"delivery_channel": new_channel}) \
+                .update({
+                    "delivery_channel": new_channel,
+                    "type": new_type  # ✅ NEW: Update type
+                }) \
                 .eq("id", order_record["id"]) \
                 .execute()
             
@@ -414,7 +464,7 @@ async def fix_old_orders():
     return {
         "status": "fix_complete",
         "total_orders_fixed": total_fixed,
-        "message": "Old orders updated. Orders without carrier info are now 'Pending'."
+        "message": "Old orders updated. Orders without carrier info are now 'Pending' and order types have been set."
     }
 
 
@@ -506,17 +556,19 @@ async def tally_orders_post(request: Request):
 
         payment_method = o.get("payment_method", "Prepaid")
         delivery_channel = o.get("delivery_channel", "Pending")
+        order_type = o.get("type", "sales")  # ✅ NEW: Get order type
         
-        # ✅ Fixed voucher type format
-        voucher_type = f"Sales-{payment_method}-{delivery_channel}"
+        # ✅ Fixed voucher type format (now includes order type)
+        voucher_type = f"{order_type.capitalize()}-{payment_method}-{delivery_channel}"
         # Examples: 
         # "Sales-COD-DTDC"
-        # "Sales-Prepaid-Delhivery" 
-        # "Sales-COD-BlueDart"
-        # "Sales-Prepaid-Pending" (if not yet assigned)
+        # "Sales-Prepaid-Delhivery"
+        # "Cancelled-COD-BlueDart"
+        # "Return-Prepaid-Pending"
 
         tally_orders.append({
             "voucher_type": voucher_type,
+            "order_type": order_type,  # ✅ NEW: Include order type in response
             "payment_method": payment_method,
             "delivery_channel": delivery_channel,
             
@@ -730,7 +782,7 @@ async def root():
     <body>
         <div class="container">
             <h1>👗 AINA Shopify-Tally Integration</h1>
-            <p>Automated delivery channel detection via order tags</p>
+            <p>Automated delivery channel detection + order type tracking (sales/cancelled/return)</p>
             
             <div class="feature workflow">
                 <h3>📅 Daily Workflow (How It Works)</h3>
@@ -738,23 +790,45 @@ async def root():
                 <div class="day">Day 1 (Jan 14) - Order Placed:</div>
                 <div class="steps">
                     1. Customer places order<br>
-                    2. Webhook fires → Order saved with <code>delivery_channel: "Pending"</code><br>
+                    2. Webhook fires → Order saved with <code>type: "sales"</code>, <code>delivery_channel: "Pending"</code><br>
                     3. Order fulfilled but carrier not assigned yet
                 </div>
                 
-                <div class="day">Day 2 (Jan 15) - Carrier Assigned:</div>
+                <div class="day">Day 2 (Jan 15) - Carrier Assigned OR Order Cancelled/Returned:</div>
                 <div class="steps">
-                    1. Staff assigns carrier (DTDC/Delhivery/BlueDart)<br>
-                    2. <strong>Staff adds tag to order</strong> (see instructions below)<br>
-                    3. Webhook fires → Database automatically updates with correct carrier!
+                    1. <strong>Option A (Normal Sale):</strong> Staff assigns carrier (DTDC/Delhivery/BlueDart) and adds tag<br>
+                    2. <strong>Option B (Cancellation):</strong> Order is cancelled → Webhook fires → <code>type: "cancelled"</code><br>
+                    3. <strong>Option C (Return):</strong> Order returned → Webhook fires → <code>type: "return"</code><br>
+                    4. Database automatically updates with correct type and carrier!
                 </div>
                 
                 <div class="day">Day 3 (Jan 16) - Tally Sync:</div>
                 <div class="steps">
                     1. Tally calls API for yesterday's orders (Jan 14)<br>
-                    2. ✅ <strong>Response includes correct carrier</strong> (tags were added on Jan 15)<br>
+                    2. ✅ <strong>Response includes order type and carrier</strong><br>
                     3. Data syncs to Tally with proper voucher types
                 </div>
+            </div>
+            
+            <div class="feature">
+                <h3>🏷️ Order Types & Voucher Classification</h3>
+                
+                <p><strong>Automatic Detection:</strong></p>
+                <ul>
+                    <li><code>sales</code> - Normal orders (default)</li>
+                    <li><code>cancelled</code> - Orders with cancel_reason or cancelled_at timestamp</li>
+                    <li><code>return</code> - Orders with fulfillment status = "returned" or tagged with "return"</li>
+                </ul>
+                
+                <p><strong>Voucher Type Format:</strong> <code>{OrderType}-{PaymentMethod}-{Carrier}</code></p>
+                <p><strong>Examples:</strong></p>
+                <ul>
+                    <li><code>Sales-COD-DTDC</code></li>
+                    <li><code>Sales-Prepaid-Delhivery</code></li>
+                    <li><code>Cancelled-COD-BlueDart</code></li>
+                    <li><code>Return-Prepaid-DTDC</code></li>
+                    <li><code>Sales-Prepaid-Pending</code> (if tag not added yet)</li>
+                </ul>
             </div>
             
             <div class="feature">
@@ -784,6 +858,12 @@ async def root():
                     <li>Enter carrier tag (e.g., <code>carrier:DTDC</code>)</li>
                     <li>Apply to all selected orders</li>
                 </ol>
+                
+                <p><strong>Marking Returns:</strong></p>
+                <ol>
+                    <li>For returned orders, you can also add tag: <code>return</code></li>
+                    <li>Or the system auto-detects if fulfillment status is "returned"</li>
+                </ol>
             </div>
             
             <div class="feature warning">
@@ -794,47 +874,42 @@ async def root():
                     <li><strong>Order updated:</strong> <code>POST /shopify/order</code> (⭐ Must add this!)</li>
                 </ol>
                 <p>Both should point to: <code>https://shopify-tally-middleware.onrender.com/shopify/order</code></p>
-            </div>
-            
-            <div class="feature">
-                <h3>✅ Voucher Classification</h3>
-                <p><strong>Format:</strong> <code>Sales-{PaymentMethod}-{Carrier}</code></p>
-                <p><strong>Examples:</strong></p>
-                <ul>
-                    <li><code>Sales-COD-DTDC</code></li>
-                    <li><code>Sales-Prepaid-Delhivery</code></li>
-                    <li><code>Sales-COD-BlueDart</code></li>
-                    <li><code>Sales-Prepaid-Pending</code> (if tag not added yet)</li>
-                </ul>
+                <p>This ensures cancelled and returned orders are properly tracked!</p>
             </div>
             
             <div class="feature">
                 <h3>✅ Client Requirements Met</h3>
                 <ul>
+                    <li>✅ Order type tracking (sales, cancelled, return)</li>
                     <li>✅ COD vs Prepaid classification</li>
                     <li>✅ Sales discounts in summary (removed nested structure)</li>
                     <li>✅ Shipping charges in summary (removed nested structure)</li>
                     <li>✅ GST split (rate with GST + rate without GST)</li>
                     <li>✅ CGST, SGST, IGST breakdown</li>
                     <li>✅ Three delivery channels for debtor tracking</li>
+                    <li>✅ Voucher type includes order type, payment method, and delivery channel</li>
                 </ul>
             </div>
             
             <div class="feature">
                 <h3>📊 API Endpoints</h3>
-                <p><strong>Order Webhook:</strong> POST /shopify/order (handles create AND update)</p>
+                <p><strong>Order Webhook:</strong> POST /shopify/order (handles create, update, cancel, return)</p>
                 <p><strong>Fetch Orders for Tally:</strong> POST /tally/orders</p>
                 <p><strong>Create Order in Shopify:</strong> POST /tally/sales</p>
+                <p><strong>Sync pending deliveries:</strong> POST /sync/delivery-channels</p>
+                <p><strong>Fix old orders:</strong> POST /fix/old-orders</p>
             </div>
             
             <div class="feature">
                 <h3>💡 Tips for Best Results</h3>
                 <ul>
-                    <li>Add tags <strong>every morning</strong> for yesterday's fulfilled orders</li>
+                    <li>Cancelled/returned orders are detected automatically when status changes</li>
+                    <li>Add carrier tags <strong>every morning</strong> for yesterday's fulfilled orders</li>
                     <li>Use exact tag format: <code>carrier:DTDC</code> (case-sensitive)</li>
                     <li>Tags can be added immediately after fulfillment or next day</li>
                     <li>If tag is missed, add it anytime - it will update in database automatically</li>
                     <li>Tally should sync orders from yesterday (not today) to get tagged orders</li>
+                    <li>Order type is set automatically based on Shopify order status</li>
                 </ul>
             </div>
         </div>
