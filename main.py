@@ -1,4 +1,5 @@
 import urllib.parse
+import re
 from fastapi.responses import HTMLResponse, RedirectResponse
 import os
 import requests
@@ -25,41 +26,70 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # -------------------------------------------------
 # Helper Functions
 # -------------------------------------------------
+def extract_order_number_from_note(note: str):
+    """
+    Extract order number from notes like:
+    - "This is an exchange order against #184055"
+    - "This is a redispatch order against #184055"
+    
+    Returns: "184055" or None if not found
+    """
+    if not note:
+        return None
+    
+    # Pattern to match: "against #NUMBER" or "against ORDER_NUMBER"
+    match = re.search(r'against\s+#?(\d+)', note, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    
+    return None
+
+
 def determine_order_type(order):
     """
-    Determine order type: 'sales', 'cancelled', or 'return'
+    Determine order type: 'sales', 'cancelled', 'return', 'exchange', or 'redispatch'
     
-    Logic:
-    - If order is cancelled → 'cancelled'
-    - If order has returns → 'return'
-    - Otherwise → 'sales'
+    Priority order:
+    1. Cancelled orders (cancel_reason or cancelled_at)
+    2. Exchange orders (note contains "exchange order against")
+    3. Redispatch orders (note contains "redispatch order against")
+    4. Return orders (tag "return" or fulfillment status = "returned")
+    5. Default: sales
     """
     # Check if order is cancelled
     cancel_reason = order.get("cancel_reason")
     cancelled_at = order.get("cancelled_at")
     
     if cancel_reason or cancelled_at:
-        return "cancelled"
+        return "cancelled", None
     
-    # Check if order has returns (via fulfillment status or return data)
+    # Check order notes for exchange/redispatch
+    note = (order.get("note") or "").lower()
+    
+    # Check for exchange order
+    if "exchange order against" in note:
+        against_id = extract_order_number_from_note(order.get("note", ""))
+        return "exchange", against_id
+    
+    # Check for redispatch order
+    if "redispatch order against" in note:
+        against_id = extract_order_number_from_note(order.get("note", ""))
+        return "redispatch", against_id
+    
+    # Check for return order (tag-based)
+    tags = (order.get("tags") or "").lower()
+    if "return" in tags or "returned" in tags:
+        return "return", None
+    
+    # Check fulfillment status for returns
     fulfillments = order.get("fulfillments", [])
     for f in fulfillments:
         status = (f.get("status") or "").lower()
         if status == "returned" or "return" in status.lower():
-            return "return"
-    
-    # Check order tags for return indication
-    tags = (order.get("tags") or "").lower()
-    if "return" in tags or "returned" in tags:
-        return "return"
-    
-    # Check note for return indication
-    note = (order.get("note") or "").lower()
-    if "return" in note or "returned" in note:
-        return "return"
+            return "return", None
     
     # Default to sales
-    return "sales"
+    return "sales", None
 
 
 def determine_payment_method(order):
@@ -164,7 +194,7 @@ async def shopify_order(request: Request):
     Webhook for order creation AND updates (including when tags are added).
     This fires multiple times:
     1. When order is created
-    2. When order is updated (tags, fulfillment, cancelled, etc.)
+    2. When order is updated (tags, fulfillment, cancelled, returned, notes changed, etc.)
     """
     order = await request.json()
 
@@ -216,9 +246,11 @@ async def shopify_order(request: Request):
 
     payment_method = determine_payment_method(order)
     delivery_channel = determine_delivery_channel(order)
-    order_type = determine_order_type(order)  # ✅ NEW: Determine order type
+    
+    # ✅ NEW: Now returns tuple (type, against_order_id)
+    order_type, against_order_id = determine_order_type(order)
 
-    # ✅ UPSERT: Creates new order OR updates existing one (when tags are added, cancelled, returned, etc.)
+    # ✅ UPSERT: Creates new order OR updates existing one
     res = supabase.table("orders").upsert(
         {
             "shopify_order_id": order.get("id"),
@@ -233,7 +265,8 @@ async def shopify_order(request: Request):
             "shipping_gst": shipping_tax,
             "payment_method": payment_method,
             "delivery_channel": delivery_channel,
-            "type": order_type,  # ✅ NEW: Store order type (sales, cancelled, return)
+            "type": order_type,  # ✅ sales, cancelled, return, exchange, redispatch
+            "against_order_id": against_order_id,  # ✅ For exchange/redispatch
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
             "raw_order": order
@@ -290,7 +323,8 @@ async def shopify_order(request: Request):
     return {
         "status": "stored", 
         "delivery_channel": delivery_channel,
-        "order_type": order_type,  # ✅ NEW: Return order type
+        "order_type": order_type,
+        "against_order_id": against_order_id,  # ✅ Return against_order_id
         "order_number": order.get("order_number")
     }
 
@@ -330,13 +364,14 @@ async def shopify_fulfillment(request: Request):
         
         # Determine delivery channel from updated order
         delivery_channel = determine_delivery_channel(order)
-        order_type = determine_order_type(order)  # ✅ NEW: Check order type
+        order_type, against_order_id = determine_order_type(order)  # ✅ NEW: Check order type
         
         # Update database
         result = supabase.table("orders") \
             .update({
                 "delivery_channel": delivery_channel,
-                "type": order_type,  # ✅ NEW: Update order type
+                "type": order_type,
+                "against_order_id": against_order_id,  # ✅ NEW: Update against_order_id
                 "raw_order": order
             }) \
             .eq("shopify_order_id", order_id) \
@@ -346,7 +381,8 @@ async def shopify_fulfillment(request: Request):
             "status": "success",
             "order_id": order_id,
             "delivery_channel": delivery_channel,
-            "order_type": order_type,  # ✅ NEW: Return order type
+            "order_type": order_type,
+            "against_order_id": against_order_id,  # ✅ NEW: Return against_order_id
             "updated": len(result.data) > 0
         }
     
@@ -366,7 +402,7 @@ async def shopify_fulfillment(request: Request):
 async def sync_delivery_channels():
     """
     Manually sync delivery channels for orders with 'Pending' status.
-    Also updates order types (cancelled, sales, return).
+    Also updates order types and against_order_id.
     Run this daily or on-demand.
     """
     # Get all orders with Pending delivery channel
@@ -391,14 +427,15 @@ async def sync_delivery_channels():
         
         order = response.json()["order"]
         delivery_channel = determine_delivery_channel(order)
-        order_type = determine_order_type(order)  # ✅ NEW: Update type as well
+        order_type, against_order_id = determine_order_type(order)  # ✅ NEW: Update type
         
         # Only update if no longer pending
         if delivery_channel != "Pending":
             supabase.table("orders") \
                 .update({
                     "delivery_channel": delivery_channel,
-                    "type": order_type,  # ✅ NEW: Update type
+                    "type": order_type,
+                    "against_order_id": against_order_id,  # ✅ NEW: Update against_order_id
                     "raw_order": order
                 }) \
                 .eq("shopify_order_id", shopify_order_id) \
@@ -413,18 +450,14 @@ async def sync_delivery_channels():
 
 
 # -------------------------------------------------
-# NEW: Fix old orders with wrong channels (Website, Marketplace, Social-Media)
+# NEW: Fix old orders with wrong channels
 # -------------------------------------------------
 @app.post("/fix/old-orders")
 async def fix_old_orders():
     """
     Reset all orders that have incorrect delivery channels from old code.
     Changes "Website", "Marketplace", "Social-Media" → "Pending"
-    Also sets order type based on current Shopify data.
-    
-    Then you can either:
-    1. Let staff add tags manually
-    2. Run sync to re-detect from Shopify data
+    Also sets order type and against_order_id based on current Shopify data.
     """
     # Get orders with old wrong channels
     wrong_channels = ["Website", "Marketplace", "Social-Media"]
@@ -444,17 +477,19 @@ async def fix_old_orders():
             if raw_order:
                 # Use the new detection logic
                 new_channel = determine_delivery_channel(raw_order)
-                new_type = determine_order_type(raw_order)  # ✅ NEW: Set type
+                new_type, new_against_id = determine_order_type(raw_order)  # ✅ NEW
             else:
                 # If no raw_order, default to Pending and sales
                 new_channel = "Pending"
                 new_type = "sales"
+                new_against_id = None
             
             # Update the order
             supabase.table("orders") \
                 .update({
                     "delivery_channel": new_channel,
-                    "type": new_type  # ✅ NEW: Update type
+                    "type": new_type,
+                    "against_order_id": new_against_id  # ✅ NEW
                 }) \
                 .eq("id", order_record["id"]) \
                 .execute()
@@ -464,7 +499,7 @@ async def fix_old_orders():
     return {
         "status": "fix_complete",
         "total_orders_fixed": total_fixed,
-        "message": "Old orders updated. Orders without carrier info are now 'Pending' and order types have been set."
+        "message": "Old orders updated with new type detection logic."
     }
 
 
@@ -556,7 +591,8 @@ async def tally_orders_post(request: Request):
 
         payment_method = o.get("payment_method", "Prepaid")
         delivery_channel = o.get("delivery_channel", "Pending")
-        order_type = o.get("type", "sales")  # ✅ NEW: Get order type
+        order_type = o.get("type", "sales")
+        against_order_id = o.get("against_order_id")  # ✅ NEW: Get against_order_id
         
         # ✅ Fixed voucher type format (now includes order type)
         voucher_type = f"{order_type.capitalize()}-{payment_method}-{delivery_channel}"
@@ -564,11 +600,13 @@ async def tally_orders_post(request: Request):
         # "Sales-COD-DTDC"
         # "Sales-Prepaid-Delhivery"
         # "Cancelled-COD-BlueDart"
-        # "Return-Prepaid-Pending"
+        # "Return-Prepaid-DTDC"
+        # "Exchange-Prepaid-Delhivery"
+        # "Redispatch-COD-DTDC"
 
-        tally_orders.append({
+        order_data = {
             "voucher_type": voucher_type,
-            "order_type": order_type,  # ✅ NEW: Include order type in response
+            "order_type": order_type,
             "payment_method": payment_method,
             "delivery_channel": delivery_channel,
             
@@ -601,7 +639,13 @@ async def tally_orders_post(request: Request):
             "currency": o["currency"],
             "source": o["source"],
             "shopify_order_id": o["shopify_order_id"]
-        })
+        }
+        
+        # ✅ NEW: Add against_order_id only for exchange and redispatch
+        if order_type in ["exchange", "redispatch"] and against_order_id:
+            order_data["against_order_id"] = against_order_id
+
+        tally_orders.append(order_data)
 
     return {"orders": tally_orders}
 
@@ -773,6 +817,8 @@ async def root():
             .feature h3 { margin-top: 0; color: #202223; }
             .workflow { background: #e8f5e9; border-left-color: #4caf50; }
             .warning { background: #fff4e6; border-left-color: #ff9800; }
+            .exchange { background: #e3f2fd; border-left-color: #2196f3; }
+            .redispatch { background: #f3e5f5; border-left-color: #9c27b0; }
             code { background: #e1e3e5; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
             ul { margin: 10px 0; }
             .steps { background: #fff; padding: 15px; border-radius: 5px; border: 1px solid #ddd; margin: 10px 0; }
@@ -782,134 +828,152 @@ async def root():
     <body>
         <div class="container">
             <h1>👗 AINA Shopify-Tally Integration</h1>
-            <p>Automated delivery channel detection + order type tracking (sales/cancelled/return)</p>
+            <p>Automated order type detection + delivery channel tracking (sales/cancelled/return/exchange/redispatch)</p>
             
             <div class="feature workflow">
                 <h3>📅 Daily Workflow (How It Works)</h3>
                 
-                <div class="day">Day 1 (Jan 14) - Order Placed:</div>
+                <div class="day">Day 1 - Order Created:</div>
                 <div class="steps">
-                    1. Customer places order<br>
-                    2. Webhook fires → Order saved with <code>type: "sales"</code>, <code>delivery_channel: "Pending"</code><br>
-                    3. Order fulfilled but carrier not assigned yet
+                    Customer places order → Webhook fires → Order saved as <code>type: "sales"</code>
                 </div>
                 
-                <div class="day">Day 2 (Jan 15) - Carrier Assigned OR Order Cancelled/Returned:</div>
+                <div class="day">Day 2+ - Order Status Changes:</div>
                 <div class="steps">
-                    1. <strong>Option A (Normal Sale):</strong> Staff assigns carrier (DTDC/Delhivery/BlueDart) and adds tag<br>
-                    2. <strong>Option B (Cancellation):</strong> Order is cancelled → Webhook fires → <code>type: "cancelled"</code><br>
-                    3. <strong>Option C (Return):</strong> Order returned → Webhook fires → <code>type: "return"</code><br>
-                    4. Database automatically updates with correct type and carrier!
-                </div>
-                
-                <div class="day">Day 3 (Jan 16) - Tally Sync:</div>
-                <div class="steps">
-                    1. Tally calls API for yesterday's orders (Jan 14)<br>
-                    2. ✅ <strong>Response includes order type and carrier</strong><br>
-                    3. Data syncs to Tally with proper voucher types
+                    <strong>Scenario 1 (Normal Sale):</strong> Staff adds carrier tag → <code>type: "sales"</code>, carrier assigned<br><br>
+                    <strong>Scenario 2 (Cancellation):</strong> Order cancelled → Webhook fires → <code>type: "cancelled"</code> (automatic)<br><br>
+                    <strong>Scenario 3 (Return/Refund):</strong> Staff adds tag <code>return</code> → <code>type: "return"</code> (automatic)<br><br>
+                    <strong>Scenario 4 (Exchange):</strong> Staff adds note <code>"This is an exchange order against #184055"</code> → <code>type: "exchange"</code>, <code>against_order_id: "184055"</code><br><br>
+                    <strong>Scenario 5 (Redispatch):</strong> Staff adds note <code>"This is a redispatch order against #184055"</code> → <code>type: "redispatch"</code>, <code>against_order_id: "184055"</code>
                 </div>
             </div>
             
-            <div class="feature">
-                <h3>🏷️ Order Types & Voucher Classification</h3>
+            <div class="feature exchange">
+                <h3>🔄 Exchange Orders</h3>
                 
-                <p><strong>Automatic Detection:</strong></p>
+                <p><strong>What is an exchange order?</strong></p>
+                <p>A customer returns an item and receives a different/replacement item. Example: Customer bought size M shirt but exchanges for size L shirt.</p>
+                
+                <p><strong>How to mark in Shopify:</strong></p>
+                <ol>
+                    <li>Open the NEW order (the exchange order)</li>
+                    <li>Scroll to "Notes" section</li>
+                    <li>Add note: <code>This is an exchange order against #184055</code></li>
+                    <li>Click "Save"</li>
+                </ol>
+                
+                <p><strong>System automatically detects:</strong></p>
                 <ul>
-                    <li><code>sales</code> - Normal orders (default)</li>
-                    <li><code>cancelled</code> - Orders with cancel_reason or cancelled_at timestamp</li>
-                    <li><code>return</code> - Orders with fulfillment status = "returned" or tagged with "return"</li>
+                    <li>✅ <code>type: "exchange"</code></li>
+                    <li>✅ <code>against_order_id: "184055"</code> (extracted from note)</li>
+                    <li>✅ Links to original order #184055</li>
                 </ul>
                 
-                <p><strong>Voucher Type Format:</strong> <code>{OrderType}-{PaymentMethod}-{Carrier}</code></p>
-                <p><strong>Examples:</strong></p>
+                <p><strong>Tally Response:</strong></p>
+                <pre>{ "order_type": "exchange", "against_order_id": "184055", "voucher_type": "Exchange-COD-DTDC" }</pre>
+            </div>
+            
+            <div class="feature redispatch">
+                <h3>📦 Redispatch Orders</h3>
+                
+                <p><strong>What is a redispatch order?</strong></p>
+                <p>Original order delivery failed/was lost. A new shipment is sent to customer. Example: Package #184055 was lost, so new order #184060 is dispatched to same customer.</p>
+                
+                <p><strong>How to mark in Shopify:</strong></p>
+                <ol>
+                    <li>Open the NEW order (the redispatch order)</li>
+                    <li>Scroll to "Notes" section</li>
+                    <li>Add note: <code>This is a redispatch order against #184055</code></li>
+                    <li>Click "Save"</li>
+                </ol>
+                
+                <p><strong>System automatically detects:</strong></p>
+                <ul>
+                    <li>✅ <code>type: "redispatch"</code></li>
+                    <li>✅ <code>against_order_id: "184055"</code> (extracted from note)</li>
+                    <li>✅ Links to original order #184055</li>
+                </ul>
+                
+                <p><strong>Tally Response:</strong></p>
+                <pre>{ "order_type": "redispatch", "against_order_id": "184055", "voucher_type": "Redispatch-Prepaid-Delhivery" }</pre>
+            </div>
+            
+            <div class="feature">
+                <h3>🏷️ All Order Types & Detection</h3>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-top: 10px;">
+                    <tr style="background: #f5f5f5; border-bottom: 2px solid #5c6ac4;">
+                        <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Type</th>
+                        <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">How Staff Marks It</th>
+                        <th style="padding: 10px; text-align: left; border: 1px solid #ddd;">Detection Logic</th>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd;"><strong>Sales</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">No action needed (default)</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Default type for all orders</td>
+                    </tr>
+                    <tr style="background: #fee; border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd;"><strong>Cancelled</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Shopify "Cancel Order" button</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Automatic (cancel_reason or cancelled_at)</td>
+                    </tr>
+                    <tr style="border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd;"><strong>Return</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Add tag <code>return</code></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Tag "return" OR fulfillment status = "returned"</td>
+                    </tr>
+                    <tr style="background: #e3f2fd; border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd;"><strong>Exchange</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Add note: <code>This is an exchange order against #ORDER</code></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Note contains "exchange order against"</td>
+                    </tr>
+                    <tr style="background: #f3e5f5; border-bottom: 1px solid #ddd;">
+                        <td style="padding: 10px; border: 1px solid #ddd;"><strong>Redispatch</strong></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Add note: <code>This is a redispatch order against #ORDER</code></td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">Note contains "redispatch order against"</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <div class="feature">
+                <h3>💡 Voucher Types & Examples</h3>
+                <p><strong>Format:</strong> <code>{OrderType}-{PaymentMethod}-{DeliveryChannel}</code></p>
+                
+                <p><strong>Sales Examples:</strong></p>
                 <ul>
                     <li><code>Sales-COD-DTDC</code></li>
                     <li><code>Sales-Prepaid-Delhivery</code></li>
-                    <li><code>Cancelled-COD-BlueDart</code></li>
-                    <li><code>Return-Prepaid-DTDC</code></li>
-                    <li><code>Sales-Prepaid-Pending</code> (if tag not added yet)</li>
+                    <li><code>Sales-Prepaid-Pending</code> (carrier not assigned yet)</li>
+                </ul>
+                
+                <p><strong>Special Order Examples:</strong></p>
+                <ul>
+                    <li><code>Cancelled-COD-BlueDart</code> (cancelled order)</li>
+                    <li><code>Return-Prepaid-DTDC</code> (return/refund)</li>
+                    <li><code>Exchange-COD-Delhivery</code> (exchange with carrier assigned)</li>
+                    <li><code>Redispatch-Prepaid-DTDC</code> (redispatch with carrier assigned)</li>
                 </ul>
             </div>
             
-            <div class="feature">
-                <h3>🏷️ How to Add Carrier Tags (For Staff)</h3>
-                
-                <p><strong>Method 1: Single Order</strong></p>
-                <ol>
-                    <li>Open the order in Shopify Admin</li>
-                    <li>Scroll down to "Tags" section (right sidebar)</li>
-                    <li>Type one of these exact tags:
-                        <ul>
-                            <li><code>carrier:DTDC</code></li>
-                            <li><code>carrier:Delhivery</code></li>
-                            <li><code>carrier:BlueDart</code></li>
-                        </ul>
-                    </li>
-                    <li>Press Enter</li>
-                    <li>Click "Save" (top right corner)</li>
-                </ol>
-                
-                <p><strong>Method 2: Bulk Tagging (Faster for Multiple Orders)</strong></p>
-                <ol>
-                    <li>Go to Orders page</li>
-                    <li>Select multiple orders using checkboxes</li>
-                    <li>Click "More actions" dropdown</li>
-                    <li>Select "Add tags"</li>
-                    <li>Enter carrier tag (e.g., <code>carrier:DTDC</code>)</li>
-                    <li>Apply to all selected orders</li>
-                </ol>
-                
-                <p><strong>Marking Returns:</strong></p>
-                <ol>
-                    <li>For returned orders, you can also add tag: <code>return</code></li>
-                    <li>Or the system auto-detects if fulfillment status is "returned"</li>
-                </ol>
-            </div>
-            
             <div class="feature warning">
-                <h3>⚠️ Important: Webhook Setup Required</h3>
+                <h3>⚠️ Important Setup Instructions</h3>
                 <p>Make sure you have BOTH webhooks configured:</p>
                 <ol>
                     <li><strong>Order creation:</strong> <code>POST /shopify/order</code> (✅ Already set up)</li>
                     <li><strong>Order updated:</strong> <code>POST /shopify/order</code> (⭐ Must add this!)</li>
                 </ol>
                 <p>Both should point to: <code>https://shopify-tally-middleware.onrender.com/shopify/order</code></p>
-                <p>This ensures cancelled and returned orders are properly tracked!</p>
-            </div>
-            
-            <div class="feature">
-                <h3>✅ Client Requirements Met</h3>
-                <ul>
-                    <li>✅ Order type tracking (sales, cancelled, return)</li>
-                    <li>✅ COD vs Prepaid classification</li>
-                    <li>✅ Sales discounts in summary (removed nested structure)</li>
-                    <li>✅ Shipping charges in summary (removed nested structure)</li>
-                    <li>✅ GST split (rate with GST + rate without GST)</li>
-                    <li>✅ CGST, SGST, IGST breakdown</li>
-                    <li>✅ Three delivery channels for debtor tracking</li>
-                    <li>✅ Voucher type includes order type, payment method, and delivery channel</li>
-                </ul>
+                <p>This ensures all status changes (cancellations, returns, notes) are properly tracked!</p>
             </div>
             
             <div class="feature">
                 <h3>📊 API Endpoints</h3>
-                <p><strong>Order Webhook:</strong> POST /shopify/order (handles create, update, cancel, return)</p>
-                <p><strong>Fetch Orders for Tally:</strong> POST /tally/orders</p>
-                <p><strong>Create Order in Shopify:</strong> POST /tally/sales</p>
-                <p><strong>Sync pending deliveries:</strong> POST /sync/delivery-channels</p>
-                <p><strong>Fix old orders:</strong> POST /fix/old-orders</p>
-            </div>
-            
-            <div class="feature">
-                <h3>💡 Tips for Best Results</h3>
                 <ul>
-                    <li>Cancelled/returned orders are detected automatically when status changes</li>
-                    <li>Add carrier tags <strong>every morning</strong> for yesterday's fulfilled orders</li>
-                    <li>Use exact tag format: <code>carrier:DTDC</code> (case-sensitive)</li>
-                    <li>Tags can be added immediately after fulfillment or next day</li>
-                    <li>If tag is missed, add it anytime - it will update in database automatically</li>
-                    <li>Tally should sync orders from yesterday (not today) to get tagged orders</li>
-                    <li>Order type is set automatically based on Shopify order status</li>
+                    <li><strong>POST /shopify/order</strong> - Webhook for all order changes</li>
+                    <li><strong>POST /tally/orders</strong> - Fetch orders for Tally (date range)</li>
+                    <li><strong>POST /tally/sales</strong> - Create order in Shopify</li>
+                    <li><strong>POST /sync/delivery-channels</strong> - Sync pending deliveries</li>
+                    <li><strong>POST /fix/old-orders</strong> - Fix old orders with wrong types</li>
                 </ul>
             </div>
         </div>
