@@ -528,6 +528,29 @@ async def tally_orders_post(request: Request):
     for o in res.data:
         raw = o["raw_order"]
         
+        # ✅ NEW: For exchange/redispatch, get customer from original order if missing
+        customer_name = o["customer_name"]
+        customer_email = o["customer_email"]
+        customer_phone = o["customer_phone"]
+        
+        # If customer info is missing and it's exchange/redispatch, try to get from original order
+        if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
+            try:
+                # Fetch original order from database
+                original_order_res = supabase.table("orders") \
+                    .select("customer_name, customer_email, customer_phone") \
+                    .eq("order_number", o.get("against_order_id")) \
+                    .limit(1) \
+                    .execute()
+                
+                if original_order_res.data:
+                    orig = original_order_res.data[0]
+                    customer_name = orig.get("customer_name") or customer_name
+                    customer_email = orig.get("customer_email") or customer_email
+                    customer_phone = orig.get("customer_phone") or customer_phone
+            except:
+                pass  # If lookup fails, use current order's info
+        
         gross_item_amount = sum(
             float(li["price"]) * li["quantity"]
             for li in raw.get("line_items", [])
@@ -614,9 +637,9 @@ async def tally_orders_post(request: Request):
             "voucher_date": o["voucher_date"],
             
             "customer": {
-                "name": o["customer_name"],
-                "email": o["customer_email"],
-                "phone": o["customer_phone"]
+                "name": customer_name,  # ✅ Now uses original customer if exchange/redispatch
+                "email": customer_email,
+                "phone": customer_phone
             },
             
             "items": items,
