@@ -593,7 +593,9 @@ async def tally_orders_post(request: Request):
                     "cgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="CGST"), 0),
                     "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
                     "igst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="IGST"), 0),
-                    "total": round(gst, 2)
+                    "total": round(gst, 2),
+                    # ✅ NEW: Add GST percentage
+                    "percentage": round((gst / amount_ex_gst * 100), 2) if amount_ex_gst > 0 else 0
                 }
             })
 
