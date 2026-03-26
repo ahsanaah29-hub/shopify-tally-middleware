@@ -307,9 +307,33 @@ async def shopify_order(request: Request):
 
         original_rate_with_gst = price
 
+        # ✅ NEW: Extract item code and size from variant data
+        item_code = li.get("sku") or li.get("id")  # Use SKU if available, else use product ID
+        item_size = None
+        
+        # Try to extract size from variant title or properties
+        variant_title = li.get("variant_title") or ""
+        if variant_title:
+            # Check if variant title contains size info (e.g., "Red / XL" or "Blue - M")
+            size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL"]
+            for size in size_keywords:
+                if size.upper() in variant_title.upper():
+                    item_size = size
+                    break
+        
+        # If not found in variant title, check properties
+        if not item_size:
+            properties = li.get("properties") or []
+            for prop in properties:
+                if prop.get("name") and "size" in prop.get("name", "").lower():
+                    item_size = prop.get("value")
+                    break
+
         supabase.table("order_items").insert({
             "order_id": order_id,
             "item_name": li.get("title"),
+            "item_code": item_code,  # ✅ NEW: SKU or Product ID
+            "item_size": item_size,  # ✅ NEW: Size (XL, M, etc.)
             "quantity": qty,
             "rate": round(original_rate_with_gst, 2),
             "amount": amount_with_gst,
@@ -582,7 +606,9 @@ async def tally_orders_post(request: Request):
             total_with_gst += amount_with_gst
 
             items.append({
+                "item_code": li.get("sku") or li.get("id"),  # ✅ NEW: SKU or Product ID
                 "item_name": li["title"],
+                "item_size": None,  # ✅ NEW: Size will be extracted from variant
                 "quantity": qty,
                 "rate_with_gst": round(price, 2),
                 "rate_ex_gst": round(amount_ex_gst / qty, 2),
