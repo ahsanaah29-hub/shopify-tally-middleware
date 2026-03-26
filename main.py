@@ -328,6 +328,9 @@ async def shopify_order(request: Request):
                 if prop.get("name") and "size" in prop.get("name", "").lower():
                     item_size = prop.get("value")
                     break
+        
+        # ✅ NEW: Calculate GST percentage
+        gst_percentage = round((gst_amount / amount_ex_gst * 100), 2) if amount_ex_gst > 0 else 0
 
         supabase.table("order_items").insert({
             "order_id": order_id,
@@ -341,6 +344,7 @@ async def shopify_order(request: Request):
             "cgst": cgst,
             "sgst": sgst,
             "igst": igst,
+            "gst_percentage": gst_percentage,  # ✅ NEW: GST percentage (5, 12, 18, 28%)
             "item_discount": round(discount, 2)
         }).execute()
 
