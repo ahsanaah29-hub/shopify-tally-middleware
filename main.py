@@ -609,10 +609,21 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
+            # ✅ NEW: Extract item_size from variant title
+            item_size = None
+            variant_title = li.get("variant_title") or ""
+            if variant_title:
+                # Check if variant title contains size info (e.g., "Red / XL" or "Blue - M")
+                size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL"]
+                for size in size_keywords:
+                    if size.upper() in variant_title.upper():
+                        item_size = size
+                        break
+
             items.append({
-                "item_code": li.get("sku") or li.get("id"),  # ✅ NEW: SKU or Product ID
+                "item_code": li.get("sku") or li.get("id"),  # ✅ SKU or Product ID
                 "item_name": li["title"],
-                "item_size": None,  # ✅ NEW: Size will be extracted from variant
+                "item_size": item_size,  # ✅ FIXED: Now fetches from variant_title
                 "quantity": qty,
                 "rate_with_gst": round(price, 2),
                 "rate_ex_gst": round(amount_ex_gst / qty, 2),
