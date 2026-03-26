@@ -609,21 +609,29 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
-            # ✅ NEW: Extract item_size from variant title
+            # ✅ FIXED: Extract item_size from variant_title (which is already just the size)
             item_size = None
             variant_title = li.get("variant_title") or ""
+            
             if variant_title:
-                # Check if variant title contains size info (e.g., "Red / XL" or "Blue - M")
-                size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL"]
+                # If variant_title is just the size (e.g., "XS", "M", "XL")
+                size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL", "XXS"]
                 for size in size_keywords:
-                    if size.upper() in variant_title.upper():
+                    if size.upper() == variant_title.upper():
                         item_size = size
                         break
+                
+                # If not found as direct match, search within the text
+                if not item_size:
+                    for size in size_keywords:
+                        if size.upper() in variant_title.upper():
+                            item_size = size
+                            break
 
             items.append({
-                "item_code": li.get("sku") or li.get("id"),  # ✅ SKU or Product ID
+                "item_code": li.get("sku") or li.get("id"),
                 "item_name": li["title"],
-                "item_size": item_size,  # ✅ FIXED: Now fetches from variant_title
+                "item_size": item_size,  # ✅ Now correctly extracts size
                 "quantity": qty,
                 "rate_with_gst": round(price, 2),
                 "rate_ex_gst": round(amount_ex_gst / qty, 2),
@@ -635,7 +643,6 @@ async def tally_orders_post(request: Request):
                     "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
                     "igst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="IGST"), 0),
                     "total": round(gst, 2),
-                    # ✅ NEW: Add GST percentage
                     "percentage": round((gst / amount_ex_gst * 100), 2) if amount_ex_gst > 0 else 0
                 }
             })
