@@ -311,17 +311,36 @@ async def shopify_order(request: Request):
         item_code = li.get("sku") or li.get("id")  # Use SKU if available, else use product ID
         item_size = None
         
-        # Try to extract size from variant title or properties
+        # Try to extract size from variant title first
         variant_title = li.get("variant_title") or ""
         if variant_title:
             # Sort size keywords by length (longest first) to match "2XS", "2XL" before "XS", "XL"
             size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+            
+            # First try direct match
             for size in size_keywords:
-                if size.upper() in variant_title.upper():
+                if size.upper() == variant_title.upper():
                     item_size = size
                     break
+            
+            # If not found as direct match, search within the text
+            if not item_size:
+                for size in size_keywords:
+                    if size.upper() in variant_title.upper():
+                        item_size = size
+                        break
         
-        # If not found in variant title, check properties
+        # ✅ NEW: If not found in variant_title, try the name field (e.g., "Product - 2XS")
+        if not item_size:
+            name = li.get("name") or ""
+            if name:
+                size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                for size in size_keywords:
+                    if size.upper() in name.upper():
+                        item_size = size
+                        break
+        
+        # If still not found, check properties
         if not item_size:
             properties = li.get("properties") or []
             for prop in properties:
@@ -609,24 +628,32 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
-            # ✅ FIXED: Extract item_size from variant_title (prefer longer matches like 2XS over XS)
+            # ✅ FIXED: Extract item_size from variant_title OR name field
             item_size = None
             variant_title = li.get("variant_title") or ""
+            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
             
+            # Try variant_title first
             if variant_title:
-                # Sort size keywords by length (longest first) to match "2XS" before "XS"
-                size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
-                
                 # First try direct match
                 for size in size_keywords:
                     if size.upper() == variant_title.upper():
                         item_size = size
                         break
                 
-                # If not found as direct match, search within the text (will match longest first due to sorting)
+                # If not found as direct match, search within the text
                 if not item_size:
                     for size in size_keywords:
                         if size.upper() in variant_title.upper():
+                            item_size = size
+                            break
+            
+            # ✅ NEW: If not found in variant_title, try the name field (e.g., "Product - 2XS")
+            if not item_size:
+                name = li.get("name") or ""
+                if name:
+                    for size in size_keywords:
+                        if size.upper() in name.upper():
                             item_size = size
                             break
 
