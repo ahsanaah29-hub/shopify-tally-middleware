@@ -334,11 +334,22 @@ async def shopify_order(request: Request):
         if not item_size:
             name = li.get("name") or ""
             if name:
-                size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
-                for size in size_keywords:
-                    if size.upper() in name.upper():
-                        item_size = size
-                        break
+                # First try to extract size after the last dash (e.g., "Product - 2XS" → "2XS")
+                if " - " in name:
+                    size_part = name.split(" - ")[-1].strip()
+                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    for size in size_keywords:
+                        if size.upper() == size_part.upper():
+                            item_size = size
+                            break
+                
+                # If not found after dash, search for size anywhere in name
+                if not item_size:
+                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    for size in size_keywords:
+                        if size.upper() in name.upper():
+                            item_size = size
+                            break
         
         # If still not found, check properties
         if not item_size:
@@ -652,10 +663,20 @@ async def tally_orders_post(request: Request):
             if not item_size:
                 name = li.get("name") or ""
                 if name:
-                    for size in size_keywords:
-                        if size.upper() in name.upper():
-                            item_size = size
-                            break
+                    # First try to extract size after the last dash (e.g., "Product - 2XS" → "2XS")
+                    if " - " in name:
+                        size_part = name.split(" - ")[-1].strip()
+                        for size in size_keywords:
+                            if size.upper() == size_part.upper():
+                                item_size = size
+                                break
+                    
+                    # If not found after dash, search for size anywhere in name
+                    if not item_size:
+                        for size in size_keywords:
+                            if size.upper() in name.upper():
+                                item_size = size
+                                break
 
             items.append({
                 "item_code": li.get("sku") or li.get("id"),
