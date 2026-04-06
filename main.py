@@ -314,8 +314,8 @@ async def shopify_order(request: Request):
         # Try to extract size from variant title or properties
         variant_title = li.get("variant_title") or ""
         if variant_title:
-            # Check if variant title contains size info (e.g., "Red / XL" or "Blue - M")
-            size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL"]
+            # Sort size keywords by length (longest first) to match "2XS", "2XL" before "XS", "XL"
+            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
             for size in size_keywords:
                 if size.upper() in variant_title.upper():
                     item_size = size
@@ -609,19 +609,21 @@ async def tally_orders_post(request: Request):
             total_gst += gst
             total_with_gst += amount_with_gst
 
-            # ✅ FIXED: Extract item_size from variant_title (which is already just the size)
+            # ✅ FIXED: Extract item_size from variant_title (prefer longer matches like 2XS over XS)
             item_size = None
             variant_title = li.get("variant_title") or ""
             
             if variant_title:
-                # If variant_title is just the size (e.g., "XS", "M", "XL")
-                size_keywords = ["XS", "S", "M", "L", "XL", "XXL", "XXXL", "2XL", "3XL", "4XL", "XXS"]
+                # Sort size keywords by length (longest first) to match "2XS" before "XS"
+                size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                
+                # First try direct match
                 for size in size_keywords:
                     if size.upper() == variant_title.upper():
                         item_size = size
                         break
                 
-                # If not found as direct match, search within the text
+                # If not found as direct match, search within the text (will match longest first due to sorting)
                 if not item_size:
                     for size in size_keywords:
                         if size.upper() in variant_title.upper():
