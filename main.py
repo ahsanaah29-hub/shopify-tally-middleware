@@ -289,7 +289,8 @@ async def shopify_order(request: Request):
         )
 
         gross = price * qty
-        amount_with_gst = round(gross - discount, 2)
+        # ✅ FIXED: Shopify price is already after discount applied, don't subtract again
+        amount_with_gst = round(gross, 2)
 
         tax_lines = li.get("tax_lines", [])
         gst_amount = sum(float(t["price"]) for t in tax_lines)
@@ -315,7 +316,7 @@ async def shopify_order(request: Request):
         variant_title = li.get("variant_title") or ""
         if variant_title:
             # Sort size keywords by length (longest first) to match "2XS", "2XL" before "XS", "XL"
-            size_keywords = ["XXXL", "XXL", "XXS", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
             
             # First try direct match
             for size in size_keywords:
@@ -337,7 +338,7 @@ async def shopify_order(request: Request):
                 # First try to extract size after the last dash (e.g., "Product - 2XS" → "2XS")
                 if " - " in name:
                     size_part = name.split(" - ")[-1].strip()
-                    size_keywords = ["XXXL", "XXL", "XXS", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
                     for size in size_keywords:
                         if size.upper() == size_part.upper():
                             item_size = size
@@ -345,7 +346,7 @@ async def shopify_order(request: Request):
                 
                 # If not found after dash, search for size anywhere in name
                 if not item_size:
-                    size_keywords = ["XXXL", "XXL", "XXS", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
                     for size in size_keywords:
                         if size.upper() in name.upper():
                             item_size = size
@@ -629,11 +630,20 @@ async def tally_orders_post(request: Request):
             price = float(li["price"])
 
             discount = sum(float(d["amount"]) for d in li.get("discount_allocations", []))
-            gross = price * qty
-            amount_with_gst = gross - discount
-
+            
+            # ✅ FIXED: Shopify price is already after discount, so don't subtract it again
+            # amount_with_gst = price as-is (already includes any discounts)
+            amount_with_gst = round(price * qty, 2)
+            
+            # Get GST amount
             gst = sum(float(t["price"]) for t in li.get("tax_lines", []))
-            amount_ex_gst = amount_with_gst - gst
+            
+            # Calculate amount ex GST
+            amount_ex_gst = round(amount_with_gst - gst, 2)
+            
+            # Calculate per-unit rates
+            rate_with_gst = round(price, 2)
+            rate_ex_gst = round(amount_ex_gst / qty, 2) if qty > 0 else 0
 
             total_ex_gst += amount_ex_gst
             total_gst += gst
@@ -642,7 +652,7 @@ async def tally_orders_post(request: Request):
             # ✅ FIXED: Extract item_size from variant_title OR name field
             item_size = None
             variant_title = li.get("variant_title") or ""
-            size_keywords = ["XXXL", "XXL", "XXS", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
             
             # Try variant_title first
             if variant_title:
