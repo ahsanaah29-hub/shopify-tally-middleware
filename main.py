@@ -703,7 +703,7 @@ async def tally_orders_post(request: Request):
                     "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
                     "igst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="IGST"), 0),
                     "total": round(gst, 2),
-                    "percentage": round((gst / amount_ex_gst * 100), 2) if amount_ex_gst > 0 else 0
+                    "percentage": next((float(t.get("rate", 0)) * 100 for t in li.get("tax_lines", [])), 0)
                 }
             })
 
