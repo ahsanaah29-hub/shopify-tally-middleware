@@ -567,22 +567,23 @@ async def fix_old_orders():
 # -------------------------------------------------
 @app.post("/tally/orders")
 async def tally_orders_post(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
 
-    from_date = body.get("from_date")
-    to_date = body.get("to_date")
+        from_date = body.get("from_date")
+        to_date = body.get("to_date")
 
-    if not from_date or not to_date:
-        raise HTTPException(400, "from_date and to_date required")
+        if not from_date or not to_date:
+            raise HTTPException(400, "from_date and to_date required")
 
-    res = supabase.table("orders") \
-        .select("*, order_items(*)") \
-        .gte("voucher_date", from_date) \
-        .lte("voucher_date", to_date) \
-        .order("voucher_date") \
-        .execute()
+        res = supabase.table("orders") \
+            .select("*, order_items(*)") \
+            .gte("voucher_date", from_date) \
+            .lte("voucher_date", to_date) \
+            .order("voucher_date") \
+            .execute()
 
-    tally_orders = []
+        tally_orders = []
 
     for o in res.data:
         raw = o["raw_order"]
