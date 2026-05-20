@@ -590,13 +590,13 @@ async def tally_orders_post(request: Request):
             raw = o["raw_order"]
         
         # ✅ NEW: For exchange/redispatch, get customer from original order if missing
-        customer_name = o["customer_name"]
-        customer_email = o["customer_email"]
-        customer_phone = o["customer_phone"]
+            customer_name = o["customer_name"]
+            customer_email = o["customer_email"]
+            customer_phone = o["customer_phone"]
         
         # If customer info is missing and it's exchange/redispatch, try to get from original order
-        if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
-            try:
+            if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
+                try:
                 # Fetch original order from database
                 original_order_res = supabase.table("orders") \
                     .select("customer_name, customer_email, customer_phone") \
