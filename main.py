@@ -597,23 +597,20 @@ async def tally_orders_post(request: Request):
             # If customer info is missing and it's exchange/redispatch, try to get from original order
             if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
 
-                try:
+                shipping_address = raw.get("shipping_address") or {}
+                billing_address = raw.get("billing_address") or {}
                     # Fetch original order from database
-                    original_order_res = supabase.table("orders") \
-                        .select("customer_name, customer_email, customer_phone") \
-                        .eq("order_number", o.get("against_order_id")) \
-                        .limit(1) \
-                        .execute()
+                customer_name = (
+                    shipping_address.get("name")
+                    or billing_address.get("name")
+                    or customer_name
+                )
 
-                    if original_order_res.data:
-                        orig = original_order_res.data[0]
-
-                        customer_name = orig.get("customer_name") or customer_name
-                        customer_email = orig.get("customer_email") or customer_email
-                        customer_phone = orig.get("customer_phone") or customer_phone
-
-                except:
-                    pass  # If lookup fails, use current order's info
+                customer_phone = (
+                    shipping_address.get("phone")
+                    or billing_address.get("phone")
+                    or customer_phone
+                ) # If lookup fails, use current order's info
 
             gross_item_amount = sum(
                 float(li["price"]) * li["quantity"]
