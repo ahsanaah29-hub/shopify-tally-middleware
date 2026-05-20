@@ -585,8 +585,9 @@ async def tally_orders_post(request: Request):
 
         tally_orders = []
 
-    for o in res.data:
-        raw = o["raw_order"]
+     # ✅ MUST BE INSIDE TRY
+        for o in res.data:
+            raw = o["raw_order"]
         
         # ✅ NEW: For exchange/redispatch, get customer from original order if missing
         customer_name = o["customer_name"]
