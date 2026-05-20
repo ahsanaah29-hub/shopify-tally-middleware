@@ -585,206 +585,322 @@ async def tally_orders_post(request: Request):
 
         tally_orders = []
 
-     # ✅ MUST BE INSIDE TRY
         for o in res.data:
+
             raw = o["raw_order"]
-        
-        # ✅ NEW: For exchange/redispatch, get customer from original order if missing
+
+            # ✅ NEW: For exchange/redispatch, get customer from original order if missing
             customer_name = o["customer_name"]
             customer_email = o["customer_email"]
             customer_phone = o["customer_phone"]
-        
-        # If customer info is missing and it's exchange/redispatch, try to get from original order
+
+            # If customer info is missing and it's exchange/redispatch, try to get from original order
             if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
+
                 try:
-                # Fetch original order from database
-                original_order_res = supabase.table("orders") \
-                    .select("customer_name, customer_email, customer_phone") \
-                    .eq("order_number", o.get("against_order_id")) \
-                    .limit(1) \
-                    .execute()
-                
-                if original_order_res.data:
-                    orig = original_order_res.data[0]
-                    customer_name = orig.get("customer_name") or customer_name
-                    customer_email = orig.get("customer_email") or customer_email
-                    customer_phone = orig.get("customer_phone") or customer_phone
-            except:
-                pass  # If lookup fails, use current order's info
-        
-        gross_item_amount = sum(
-            float(li["price"]) * li["quantity"]
-            for li in raw.get("line_items", [])
-        )
+                    # Fetch original order from database
+                    original_order_res = supabase.table("orders") \
+                        .select("customer_name, customer_email, customer_phone") \
+                        .eq("order_number", o.get("against_order_id")) \
+                        .limit(1) \
+                        .execute()
 
-        discount_amount = float(raw.get("total_discounts", 0))
-        net_item_amount = round(gross_item_amount - discount_amount, 2)
+                    if original_order_res.data:
+                        orig = original_order_res.data[0]
 
-        shopify_lines = raw.get("line_items", [])
+                        customer_name = orig.get("customer_name") or customer_name
+                        customer_email = orig.get("customer_email") or customer_email
+                        customer_phone = orig.get("customer_phone") or customer_phone
 
-        items = []
-        total_ex_gst = 0
-        total_gst = 0
-        total_with_gst = 0
-        
-        for li in shopify_lines:
-            qty = li["quantity"]
-            price = float(li["price"])
+                except:
+                    pass  # If lookup fails, use current order's info
 
-            discount = sum(float(d["amount"]) for d in li.get("discount_allocations", []))
-            
-            # ✅ FIXED: Shopify price is already after discount, so don't subtract it again
-            # amount_with_gst = price as-is (already includes any discounts)
-            amount_with_gst = round(price * qty, 2)
-            
-            # Get GST amount
-            gst = sum(float(t["price"]) for t in li.get("tax_lines", []))
-            
-            # Calculate amount ex GST
-            amount_ex_gst = round(amount_with_gst - gst, 2)
-            
-            # Calculate per-unit rates
-            rate_with_gst = round(price, 2)
-            rate_ex_gst = round(amount_ex_gst / qty, 2) if qty > 0 else 0
+            gross_item_amount = sum(
+                float(li["price"]) * li["quantity"]
+                for li in raw.get("line_items", [])
+            )
 
-            total_ex_gst += amount_ex_gst
-            total_gst += gst
-            total_with_gst += amount_with_gst
+            discount_amount = float(raw.get("total_discounts", 0))
 
-            # ✅ FIXED: Extract item_size from variant_title OR name field
-            item_size = None
-            variant_title = li.get("variant_title") or ""
-            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
-            
-            # Try variant_title first
-            if variant_title:
-                # First try direct match
-                for size in size_keywords:
-                    if size.upper() == variant_title.upper():
-                        item_size = size
-                        break
-                
-                # If not found as direct match, search within the text
-                if not item_size:
+            net_item_amount = round(
+                gross_item_amount - discount_amount,
+                2
+            )
+
+            shopify_lines = raw.get("line_items", [])
+
+            items = []
+
+            total_ex_gst = 0
+            total_gst = 0
+            total_with_gst = 0
+
+            for li in shopify_lines:
+
+                qty = li["quantity"]
+                price = float(li["price"])
+
+                discount = sum(
+                    float(d["amount"])
+                    for d in li.get("discount_allocations", [])
+                )
+
+                # ✅ Shopify price already includes discount
+                amount_with_gst = round(price * qty, 2)
+
+                # GST amount
+                gst = sum(
+                    float(t["price"])
+                    for t in li.get("tax_lines", [])
+                )
+
+                amount_ex_gst = round(
+                    amount_with_gst - gst,
+                    2
+                )
+
+                rate_with_gst = round(price, 2)
+
+                rate_ex_gst = round(
+                    amount_ex_gst / qty,
+                    2
+                ) if qty > 0 else 0
+
+                total_ex_gst += amount_ex_gst
+                total_gst += gst
+                total_with_gst += amount_with_gst
+
+                # ✅ Extract item size
+                item_size = None
+
+                variant_title = li.get("variant_title") or ""
+
+                size_keywords = [
+                    "XXXL",
+                    "XXL",
+                    "XXS",
+                    "2XL",
+                    "3XL",
+                    "4XL",
+                    "XL",
+                    "XS",
+                    "S",
+                    "M",
+                    "L"
+                ]
+
+                # Try variant title first
+                if variant_title:
+
                     for size in size_keywords:
-                        if size.upper() in variant_title.upper():
+                        if size.upper() == variant_title.upper():
                             item_size = size
                             break
-            
-            # ✅ NEW: If not found in variant_title, try the name field (e.g., "Product - 2XS")
-            if not item_size:
-                name = li.get("name") or ""
-                if name:
-                    # First try to extract size after the last dash (e.g., "Product - 2XS" → "2XS")
-                    if " - " in name:
-                        size_part = name.split(" - ")[-1].strip()
-                        for size in size_keywords:
-                            if size.upper() == size_part.upper():
-                                item_size = size
-                                break
-                    
-                    # If not found after dash, search for size anywhere in name
+
                     if not item_size:
                         for size in size_keywords:
-                            if size.upper() in name.upper():
+                            if size.upper() in variant_title.upper():
                                 item_size = size
                                 break
 
-            items.append({
-                "item_code": li.get("sku") or li.get("id"),
-                "item_name": li["title"],
-                "item_size": item_size,  # ✅ Now correctly extracts size
-                "quantity": qty,
-                "rate_with_gst": round(price, 2),
-                "rate_ex_gst": round(amount_ex_gst / qty, 2),
-                "amount_ex_gst": round(amount_ex_gst, 2),
-                "amount_with_gst": round(amount_with_gst, 2),
-                "discount": round(discount, 2),
-                "gst": {
-                    "cgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="CGST"), 0),
-                    "sgst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="SGST"), 0),
-                    "igst": next((float(t["price"]) for t in li["tax_lines"] if t["title"]=="IGST"), 0),
-                    "total": round(gst, 2),
-                    "percentage": next((float(t.get("rate", 0)) * 100 for t in li.get("tax_lines", [])), 0)
-                }
-            })
+                # Try name field
+                if not item_size:
 
-        shipping = sum(
-            float(s["price"])
-            for s in raw.get("shipping_lines", [])
-        )
+                    name = li.get("name") or ""
 
-        shipping_gst = sum(
-            float(t["price"])
-            for s in raw.get("shipping_lines", [])
-            for t in s.get("tax_lines", [])
-        )
+                    if name:
 
-        shipping_ex_gst = round(shipping - shipping_gst, 2)
+                        if " - " in name:
 
-        grand_total = float(raw["total_price"])
+                            size_part = name.split(" - ")[-1].strip()
 
-        payment_method = o.get("payment_method", "Prepaid")
-        delivery_channel = o.get("delivery_channel", "Pending")
-        order_type = o.get("type", "sales")
-        against_order_id = o.get("against_order_id")  # ✅ NEW: Get against_order_id
-        
-        # ✅ Fixed voucher type format (now includes order type)
-        voucher_type = f"{order_type.capitalize()}-{payment_method}-{delivery_channel}"
-        # Examples: 
-        # "Sales-COD-DTDC"
-        # "Sales-Prepaid-Delhivery"
-        # "Cancelled-COD-BlueDart"
-        # "Return-Prepaid-DTDC"
-        # "Exchange-Prepaid-Delhivery"
-        # "Redispatch-COD-DTDC"
+                            for size in size_keywords:
+                                if size.upper() == size_part.upper():
+                                    item_size = size
+                                    break
 
-        order_data = {
-            "voucher_type": voucher_type,
-            "order_type": order_type,
-            "payment_method": payment_method,
-            "delivery_channel": delivery_channel,
-            
-            "voucher_number": o["order_number"],
-            "voucher_date": o["voucher_date"],
-            
-            "customer": {
-                "name": customer_name,  # ✅ Now uses original customer if exchange/redispatch
-                "email": customer_email,
-                "phone": customer_phone
-            },
-            
-            "items": items,
-            
-            # ✅ FLATTENED EXPENSES INTO SUMMARY
-            "gross_item_amount": round(gross_item_amount, 2),
-            "discount_amount": round(discount_amount, 2),
-            "net_item_amount": round(net_item_amount, 2),
-            
-            "shipping_ex_gst": round(shipping_ex_gst, 2),
-            "shipping_gst": round(shipping_gst, 2),
-            "shipping_with_gst": round(shipping, 2),
-            
-            "total_ex_gst": round(total_ex_gst, 2),
-            "total_gst": round(total_gst + shipping_gst, 2),
-            "total_with_gst": round(grand_total, 2),
-            
-            "grand_total": round(grand_total, 2),
-            
-            "currency": o["currency"],
-            "source": o["source"],
-            "shopify_order_id": o["shopify_order_id"]
-        }
-        
-        # ✅ NEW: Add against_order_id only for exchange and redispatch
-        if order_type in ["exchange", "redispatch"] and against_order_id:
-            order_data["against_order_id"] = against_order_id
+                        if not item_size:
+                            for size in size_keywords:
+                                if size.upper() in name.upper():
+                                    item_size = size
+                                    break
 
-        tally_orders.append(order_data)
+                items.append({
+                    "item_code": li.get("sku") or li.get("id"),
+                    "item_name": li["title"],
+                    "item_size": item_size,
+                    "quantity": qty,
+                    "rate_with_gst": round(price, 2),
+                    "rate_ex_gst": rate_ex_gst,
+                    "amount_ex_gst": round(amount_ex_gst, 2),
+                    "amount_with_gst": round(amount_with_gst, 2),
+                    "discount": round(discount, 2),
 
-    return {"orders": tally_orders}
+                    "gst": {
+                        "cgst": next(
+                            (
+                                float(t["price"])
+                                for t in li["tax_lines"]
+                                if t["title"] == "CGST"
+                            ),
+                            0
+                        ),
 
+                        "sgst": next(
+                            (
+                                float(t["price"])
+                                for t in li["tax_lines"]
+                                if t["title"] == "SGST"
+                            ),
+                            0
+                        ),
 
+                        "igst": next(
+                            (
+                                float(t["price"])
+                                for t in li["tax_lines"]
+                                if t["title"] == "IGST"
+                            ),
+                            0
+                        ),
+
+                        "total": round(gst, 2),
+
+                        "percentage": next(
+                            (
+                                float(t.get("rate", 0)) * 100
+                                for t in li.get("tax_lines", [])
+                            ),
+                            0
+                        )
+                    }
+                })
+
+            shipping = sum(
+                float(s["price"])
+                for s in raw.get("shipping_lines", [])
+            )
+
+            shipping_gst = sum(
+                float(t["price"])
+                for s in raw.get("shipping_lines", [])
+                for t in s.get("tax_lines", [])
+            )
+
+            shipping_ex_gst = round(
+                shipping - shipping_gst,
+                2
+            )
+
+            grand_total = float(raw["total_price"])
+
+            payment_method = o.get(
+                "payment_method",
+                "Prepaid"
+            )
+
+            delivery_channel = o.get(
+                "delivery_channel",
+                "Pending"
+            )
+
+            order_type = o.get(
+                "type",
+                "sales"
+            )
+
+            against_order_id = o.get("against_order_id")
+
+            # ✅ Voucher type
+            voucher_type = (
+                f"{order_type.capitalize()}-"
+                f"{payment_method}-"
+                f"{delivery_channel}"
+            )
+
+            order_data = {
+
+                "voucher_type": voucher_type,
+                "order_type": order_type,
+                "payment_method": payment_method,
+                "delivery_channel": delivery_channel,
+
+                "voucher_number": o["order_number"],
+                "voucher_date": o["voucher_date"],
+
+                "customer": {
+                    "name": customer_name,
+                    "email": customer_email,
+                    "phone": customer_phone
+                },
+
+                "items": items,
+
+                "gross_item_amount": round(
+                    gross_item_amount,
+                    2
+                ),
+
+                "discount_amount": round(
+                    discount_amount,
+                    2
+                ),
+
+                "net_item_amount": round(
+                    net_item_amount,
+                    2
+                ),
+
+                "shipping_ex_gst": round(
+                    shipping_ex_gst,
+                    2
+                ),
+
+                "shipping_gst": round(
+                    shipping_gst,
+                    2
+                ),
+
+                "shipping_with_gst": round(
+                    shipping,
+                    2
+                ),
+
+                "total_ex_gst": round(
+                    total_ex_gst,
+                    2
+                ),
+
+                "total_gst": round(
+                    total_gst + shipping_gst,
+                    2
+                ),
+
+                "total_with_gst": round(
+                    grand_total,
+                    2
+                ),
+
+                "grand_total": round(
+                    grand_total,
+                    2
+                ),
+
+                "currency": o["currency"],
+                "source": o["source"],
+                "shopify_order_id": o["shopify_order_id"]
+            }
+
+            # ✅ Add against_order_id only for exchange/redispatch
+            if order_type in ["exchange", "redispatch"] and against_order_id:
+                order_data["against_order_id"] = against_order_id
+
+            tally_orders.append(order_data)
+
+        return {"orders": tally_orders}
+
+    except Exception as e:
+        raise HTTPException(500, str(e))
 # -------------------------------------------------
 # Tally → Push Sales to Shopify
 # -------------------------------------------------
