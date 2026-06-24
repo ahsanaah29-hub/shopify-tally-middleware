@@ -724,11 +724,21 @@ async def tally_orders_post(request: Request):
                                     item_size = size
                                     break
 
+                db_item = next(
+                    (
+                        oi for oi in o.get("order_items", [])
+                        if oi.get("item_code") == (li.get("sku") or str(li.get("id")))
+                    ),
+                    {}
+                )
+
                 items.append({
                     "item_code": li.get("sku") or li.get("id"),
                     "item_name": li["title"],
                     "item_size": item_size,
                     "quantity": qty,
+                    "variant_id": db_item.get("variant_id"),
+                    "hs_code": db_item.get("hs_code"),
                     "rate_with_gst": round(price, 2),
                     "rate_ex_gst": rate_ex_gst,
                     "amount_ex_gst": round(amount_ex_gst, 2),
