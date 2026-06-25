@@ -590,11 +590,26 @@ async def tally_orders_post(request: Request):
         for o in res.data:
 
             raw = o["raw_order"]
+            shipping_address = raw.get("shipping_address") or {}
+            billing_address = raw.get("billing_address") or {}
+
+            state = (
+                shipping_address.get("province")
+                or billing_address.get("province")
+                or ""
+            )
+
+            country = (
+                shipping_address.get("country")
+                or billing_address.get("country")
+                or ""
+            )
 
             # ✅ NEW: For exchange/redispatch, get customer from original order if missing
             customer_name = o["customer_name"]
             customer_email = o["customer_email"]
             customer_phone = o["customer_phone"]
+           
 
             # If customer info is missing and it's exchange/redispatch, try to get from original order
             if (not customer_name or customer_name == "Unknown Customer") and o.get("against_order_id"):
@@ -840,7 +855,9 @@ async def tally_orders_post(request: Request):
                 "customer": {
                     "name": customer_name,
                     "email": customer_email,
-                    "phone": customer_phone
+                    "phone": customer_phone,
+                    "state": state,
+                    "country": country
                 },
 
                 "items": items,
