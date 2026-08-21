@@ -361,7 +361,10 @@ async def shopify_order(request: Request):
                     break
         
         # ✅ NEW: Calculate GST percentage
-        gst_percentage = next((float(t.get("rate", 0)) * 100 for t in tax_lines), 0) if amount_ex_gst > 0 else 0
+        gst_percentage = round(
+            sum(float(t.get("rate", 0)) * 100 for t in tax_lines),
+            2
+        ) if amount_ex_gst > 0 else 0
 
         supabase.table("order_items").insert({
             "order_id": order_id,
@@ -790,12 +793,12 @@ async def tally_orders_post(request: Request):
 
                         "total": round(gst, 2),
 
-                        "percentage": next(
-                            (
+                        "percentage": round(
+                            sum(
                                 float(t.get("rate", 0)) * 100
                                 for t in li.get("tax_lines", [])
                             ),
-                            0
+                            2
                         )
                     }
                 })
