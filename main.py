@@ -316,7 +316,7 @@ async def shopify_order(request: Request):
         variant_title = li.get("variant_title") or ""
         if variant_title:
             # Sort size keywords by length (longest first) to match "2XS", "2XL" before "XS", "XL"
-            size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+            size_keywords = ["XXXL", "XXL", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
             
             # First try direct match
             for size in size_keywords:
@@ -338,7 +338,7 @@ async def shopify_order(request: Request):
                 # First try to extract size after the last dash (e.g., "Product - 2XS" → "2XS")
                 if " - " in name:
                     size_part = name.split(" - ")[-1].strip()
-                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    size_keywords = ["XXXL", "XXL", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
                     for size in size_keywords:
                         if size.upper() == size_part.upper():
                             item_size = size
@@ -346,7 +346,7 @@ async def shopify_order(request: Request):
                 
                 # If not found after dash, search for size anywhere in name
                 if not item_size:
-                    size_keywords = ["XXXL", "XXL", "XXS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
+                    size_keywords = ["XXXL", "XXL", "2XS", "2XL", "3XL", "4XL", "XL", "XS", "S", "M", "L"]
                     for size in size_keywords:
                         if size.upper() in name.upper():
                             item_size = size
@@ -692,7 +692,7 @@ async def tally_orders_post(request: Request):
                 size_keywords = [
                     "XXXL",
                     "XXL",
-                    "XXS",
+                    "2XS",
                     "2XL",
                     "3XL",
                     "4XL",
