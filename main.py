@@ -269,6 +269,7 @@ async def shopify_order(request: Request):
             "against_order_id": against_order_id,  # ✅ For exchange/redispatch
             "currency": order.get("currency", "INR"),
             "source": "Shopify",
+            "notes": order.get("note") or "",
             "raw_order": order
         },
         on_conflict="shopify_order_id"
@@ -436,6 +437,7 @@ async def shopify_fulfillment(request: Request):
                 "delivery_channel": delivery_channel,
                 "type": order_type,
                 "against_order_id": against_order_id,  # ✅ NEW: Update against_order_id
+                "notes": order.get("note") or "",
                 "raw_order": order
             }) \
             .eq("shopify_order_id", order_id) \
@@ -854,6 +856,7 @@ async def tally_orders_post(request: Request):
 
                 "voucher_number": o["order_number"],
                 "voucher_date": o["voucher_date"],
+                "notes": o.get("notes") or "",
 
                 "customer": {
                     "name": customer_name,
