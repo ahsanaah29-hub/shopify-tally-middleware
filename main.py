@@ -116,19 +116,70 @@ def determine_payment_method(order):
     
     return "Prepaid"
 
+def get_gokwik_carrier(tracking_number):
+    """
+    Fetch carrier from GoKwik tracking API using the tracking/AWB number.
+    """
 
+    if not tracking_number:
+        return None
+
+    try:
+        url = "https://api.gokwik.co/kwikship/track/v2/public"
+
+        params = {
+            "order_code": tracking_number
+        }
+
+        response = requests.get(
+            url,
+            params=params,
+            timeout=10
+        )
+
+        print("GOKWIK RESPONSE STATUS:", response.status_code)
+
+        if response.status_code != 200:
+            print("GOKWIK ERROR:", response.text)
+            return None
+
+        data = response.json().get("data") or {}
+
+        shipper_info = data.get("shipper_info") or {}
+
+        carrier = (
+            shipper_info.get("master_shipper_name")
+            or shipper_info.get("shipper_name")
+            or ""
+        ).strip()
+
+        print("GOKWIK CARRIER:", carrier)
+
+        carrier_lower = carrier.lower()
+
+        if "dtdc" in carrier_lower:
+            return "DTDC"
+
+        if "delhivery" in carrier_lower:
+            return "Delhivery"
+
+        if "blue dart" in carrier_lower or "bluedart" in carrier_lower:
+            return "BlueDart"
+
+        return carrier or None
+
+    except Exception as e:
+        print("GOKWIK CARRIER ERROR:", str(e))
+        return None
 def determine_delivery_channel(order):
     """
-    Identify delivery channel from shipping carrier.
-    Returns: 'DTDC', 'Delhivery', 'BlueDart', or 'Pending'
-    
-    Checks multiple sources:
-    1. Order tags (e.g., "carrier:DTDC")
-    2. Fulfillment tracking company
-    3. Shipping line details
-    4. Order notes/attributes
+    Identify delivery channel from Shopify + GoKwik.
+    Returns: DTDC, Delhivery, BlueDart, or Pending
     """
-    # Method 1: Check order tags (EASIEST - no API needed!)
+
+    # -------------------------------------------------
+    # Method 1: Shopify order tags
+    # -------------------------------------------------
     tags = (order.get("tags") or "").lower()
 
     if "dtdc" in tags:
@@ -139,8 +190,10 @@ def determine_delivery_channel(order):
 
     if "bluedart" in tags or "blue dart" in tags:
         return "BlueDart"
-    
-    # Method 2: Check fulfillments (tracking companies)
+
+    # -------------------------------------------------
+    # Method 2: Shopify fulfillments
+    # -------------------------------------------------
     fulfillments = order.get("fulfillments") or []
 
     for f in fulfillments:
@@ -164,26 +217,55 @@ def determine_delivery_channel(order):
             "tracking_url =", tracking_url
         )
 
+        # Shopify carrier
         if "dtdc" in tracking_company:
             return "DTDC"
 
         if "delhivery" in tracking_company:
             return "Delhivery"
 
-        if "bluedart" in tracking_company or "blue dart" in tracking_company:
+        if (
+            "bluedart" in tracking_company
+            or "blue dart" in tracking_company
+        ):
             return "BlueDart"
 
-        # Some Shopify data may provide carrier through tracking URL
+        # Tracking URL
         if "dtdc" in tracking_url:
             return "DTDC"
 
         if "delhivery" in tracking_url:
             return "Delhivery"
 
-        if "bluedart" in tracking_url or "blue-dart" in tracking_url:
+        if (
+            "bluedart" in tracking_url
+            or "blue-dart" in tracking_url
+        ):
             return "BlueDart"
-    
-    # Method 3: Check shipping lines
+
+        # -------------------------------------------------
+        # NEW: Shopify carrier missing → Check GoKwik
+        # -------------------------------------------------
+        if tracking_number:
+
+            print(
+                "Shopify carrier missing. Checking GoKwik for:",
+                tracking_number
+            )
+
+            gokwik_carrier = get_gokwik_carrier(tracking_number)
+
+            print(
+                "GoKwik carrier:",
+                gokwik_carrier
+            )
+
+            if gokwik_carrier:
+                return gokwik_carrier
+
+    # -------------------------------------------------
+    # Method 3: Shipping lines
+    # -------------------------------------------------
     shipping_lines = order.get("shipping_lines") or []
 
     for s in shipping_lines:
@@ -204,8 +286,10 @@ def determine_delivery_channel(order):
             or "blue dart" in title
         ):
             return "BlueDart"
-    
-    # Method 4: Check order notes
+
+    # -------------------------------------------------
+    # Method 4: Order note
+    # -------------------------------------------------
     note = (order.get("note") or "").lower()
 
     if "dtdc" in note:
@@ -216,8 +300,10 @@ def determine_delivery_channel(order):
 
     if "bluedart" in note or "blue dart" in note:
         return "BlueDart"
-    
-    # Method 5: Check note attributes (custom fields)
+
+    # -------------------------------------------------
+    # Method 5: Note attributes
+    # -------------------------------------------------
     note_attributes = order.get("note_attributes") or []
 
     for attr in note_attributes:
@@ -238,12 +324,16 @@ def determine_delivery_channel(order):
         if "delhivery" in combined:
             return "Delhivery"
 
-        if "bluedart" in combined or "blue dart" in combined:
+        if (
+            "bluedart" in combined
+            or "blue dart" in combined
+        ):
             return "BlueDart"
-    
-    # Default to Pending if carrier not identified
-    return "Pending"
 
+    # -------------------------------------------------
+    # Nothing found
+    # -------------------------------------------------
+    return "Pending"
 
 # -------------------------------------------------
 # Shopify → Middleware (Webhook → Supabase)
@@ -586,7 +676,7 @@ async def sync_delivery_channels():
         res = supabase.table("orders") \
             .select("id, shopify_order_id, order_number, delivery_channel") \
             .eq("delivery_channel", "Pending") \
-            .eq("order_number", "215586")\
+            .eq("order_number", "217817")\
             .execute()
 
         print("PENDING ORDERS FOUND:", len(res.data))
