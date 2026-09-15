@@ -565,54 +565,146 @@ async def shopify_fulfillment(request: Request):
 @app.post("/sync/delivery-channels")
 async def sync_delivery_channels():
     """
-    Manually sync delivery channels for orders with 'Pending' status.
-    Also updates order types and against_order_id.
-    Run this daily or on-demand.
+    Manually sync delivery channels for orders with Pending status.
     """
-    # Get all orders with Pending delivery channel
-    res = supabase.table("orders") \
-        .select("shopify_order_id") \
-        .eq("delivery_channel", "Pending") \
-        .execute()
-    
-    updated_count = 0
-    
-    for order_record in res.data:
-        shopify_order_id = order_record["shopify_order_id"]
-        
-        # Fetch fresh data from Shopify
-        url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders/{shopify_order_id}.json"
-        headers = {"X-Shopify-Access-Token": SHOPIFY_TOKEN}
-        
-        response = requests.get(url, headers=headers)
-        
-        if response.status_code != 200:
-            continue
-        
-        order = response.json()["order"]
-        delivery_channel = determine_delivery_channel(order)
-        order_type, against_order_id = determine_order_type(order)  # ✅ NEW: Update type
-        
-        # Only update if no longer pending
-        if delivery_channel != "Pending":
+
+    try:
+        # Check Shopify configuration
+        if not SHOPIFY_STORE:
+            raise Exception("SHOPIFY_STORE_NAME is missing")
+
+        if not SHOPIFY_TOKEN:
+            raise Exception("SHOPIFY_ACCESS_TOKEN is missing")
+
+        print("==============================================")
+        print("DELIVERY CHANNEL SYNC STARTED")
+        print("SHOPIFY STORE:", SHOPIFY_STORE)
+        print("API VERSION:", SHOPIFY_API_VERSION)
+        print("==============================================")
+
+        # Get all Pending orders
+        res = supabase.table("orders") \
+            .select("id, shopify_order_id, order_number, delivery_channel") \
+            .eq("delivery_channel", "Pending") \
+            .execute()
+
+        print("PENDING ORDERS FOUND:", len(res.data))
+
+        updated_count = 0
+
+        for order_record in res.data:
+
+            shopify_order_id = order_record.get("shopify_order_id")
+
+            print("----------------------------------------------")
+            print("ORDER NUMBER:", order_record.get("order_number"))
+            print("SHOPIFY ORDER ID:", shopify_order_id)
+
+            if not shopify_order_id:
+                print("SKIPPING: Shopify order ID missing")
+                continue
+
+            # Fetch fresh order from Shopify
+            url = (
+                f"https://{SHOPIFY_STORE}.myshopify.com"
+                f"/admin/api/{SHOPIFY_API_VERSION}"
+                f"/orders/{shopify_order_id}.json"
+            )
+
+            headers = {
+                "X-Shopify-Access-Token": SHOPIFY_TOKEN
+            }
+
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=30
+            )
+
+            print("SHOPIFY RESPONSE STATUS:", response.status_code)
+
+            if response.status_code != 200:
+                print("SHOPIFY ERROR:", response.text)
+                continue
+
+            order = response.json().get("order")
+
+            if not order:
+                print("ERROR: Shopify response does not contain order")
+                continue
+
+            # Debug carrier information
+            print("ORDER TAGS:", order.get("tags"))
+            print("ORDER NOTE:", order.get("note"))
+            print("SHIPPING LINES:", order.get("shipping_lines"))
+
+            for f in order.get("fulfillments") or []:
+                print("FULFILLMENT:")
+                print("  TRACKING NUMBER:", f.get("tracking_number"))
+                print("  TRACKING COMPANY:", f.get("tracking_company"))
+                print("  TRACKING URL:", f.get("tracking_url"))
+                print("  STATUS:", f.get("status"))
+
+            # Determine delivery channel
+            delivery_channel = determine_delivery_channel(order)
+
+            print("DETECTED DELIVERY CHANNEL:", delivery_channel)
+
+            # Determine order type
+            order_type, against_order_id = determine_order_type(order)
+
+            print("ORDER TYPE:", order_type)
+            print("AGAINST ORDER ID:", against_order_id)
+
+            # Always update latest Shopify data
             supabase.table("orders") \
                 .update({
                     "delivery_channel": delivery_channel,
                     "type": order_type,
-                    "against_order_id": against_order_id,  # ✅ NEW: Update against_order_id
+                    "against_order_id": against_order_id,
                     "notes": order.get("note") or "",
                     "raw_order": order
                 }) \
                 .eq("shopify_order_id", shopify_order_id) \
                 .execute()
-            # Count only orders where a carrier was successfully identified
+
             if delivery_channel != "Pending":
                 updated_count += 1
-    
-    return {
-        "status": "sync_complete",
-        "updated_orders": updated_count
-    }
+
+                print(
+                    "✅ UPDATED:",
+                    order_record.get("order_number"),
+                    "→",
+                    delivery_channel
+                )
+            else:
+                print(
+                    "⚠️ STILL PENDING:",
+                    order_record.get("order_number")
+                )
+
+        print("==============================================")
+        print("DELIVERY CHANNEL SYNC COMPLETED")
+        print("UPDATED ORDERS:", updated_count)
+        print("==============================================")
+
+        return {
+            "status": "sync_complete",
+            "updated_orders": updated_count,
+            "pending_orders_checked": len(res.data)
+        }
+
+    except Exception as e:
+
+        print("==============================================")
+        print("❌ DELIVERY CHANNEL SYNC ERROR")
+        print(str(e))
+        print("==============================================")
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 # -------------------------------------------------
