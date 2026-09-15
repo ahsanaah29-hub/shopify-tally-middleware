@@ -130,55 +130,115 @@ def determine_delivery_channel(order):
     """
     # Method 1: Check order tags (EASIEST - no API needed!)
     tags = (order.get("tags") or "").lower()
-    if "dtdc" in tags or "carrier:dtdc" in tags:
+
+    if "dtdc" in tags:
         return "DTDC"
-    if "delhivery" in tags or "carrier:delhivery" in tags:
+
+    if "delhivery" in tags:
         return "Delhivery"
-    if "bluedart" in tags or "blue dart" in tags or "carrier:bluedart" in tags:
+
+    if "bluedart" in tags or "blue dart" in tags:
         return "BlueDart"
     
     # Method 2: Check fulfillments (tracking companies)
     fulfillments = order.get("fulfillments") or []
+
     for f in fulfillments:
-        tracking_company = (f.get("tracking_company") or "").lower()
+
+        tracking_company = (
+            f.get("tracking_company") or ""
+        ).strip().lower()
+
+        tracking_number = (
+            f.get("tracking_number") or ""
+        ).strip()
+
+        tracking_url = (
+            f.get("tracking_url") or ""
+        ).strip().lower()
+
+        print(
+            "Carrier check:",
+            "tracking_number =", tracking_number,
+            "tracking_company =", tracking_company,
+            "tracking_url =", tracking_url
+        )
+
         if "dtdc" in tracking_company:
             return "DTDC"
+
         if "delhivery" in tracking_company:
             return "Delhivery"
+
         if "bluedart" in tracking_company or "blue dart" in tracking_company:
+            return "BlueDart"
+
+        # Some Shopify data may provide carrier through tracking URL
+        if "dtdc" in tracking_url:
+            return "DTDC"
+
+        if "delhivery" in tracking_url:
+            return "Delhivery"
+
+        if "bluedart" in tracking_url or "blue-dart" in tracking_url:
             return "BlueDart"
     
     # Method 3: Check shipping lines
     shipping_lines = order.get("shipping_lines") or []
+
     for s in shipping_lines:
-        carrier = (s.get("code") or "").lower()
+
+        code = (s.get("code") or "").lower()
         title = (s.get("title") or "").lower()
-        
-        if "dtdc" in carrier or "dtdc" in title:
+
+        if "dtdc" in code or "dtdc" in title:
             return "DTDC"
-        if "delhivery" in carrier or "delhivery" in title:
+
+        if "delhivery" in code or "delhivery" in title:
             return "Delhivery"
-        if "bluedart" in carrier or "blue dart" in carrier or "bluedart" in title or "blue dart" in title:
+
+        if (
+            "bluedart" in code
+            or "blue dart" in code
+            or "bluedart" in title
+            or "blue dart" in title
+        ):
             return "BlueDart"
     
     # Method 4: Check order notes
     note = (order.get("note") or "").lower()
+
     if "dtdc" in note:
         return "DTDC"
+
     if "delhivery" in note:
         return "Delhivery"
+
     if "bluedart" in note or "blue dart" in note:
         return "BlueDart"
     
     # Method 5: Check note attributes (custom fields)
     note_attributes = order.get("note_attributes") or []
+
     for attr in note_attributes:
-        value = str(attr.get("value") or "").lower()
-        if "dtdc" in value:
+
+        value = str(
+            attr.get("value") or ""
+        ).lower()
+
+        name = str(
+            attr.get("name") or ""
+        ).lower()
+
+        combined = f"{name} {value}"
+
+        if "dtdc" in combined:
             return "DTDC"
-        if "delhivery" in value:
+
+        if "delhivery" in combined:
             return "Delhivery"
-        if "bluedart" in value or "blue dart" in value:
+
+        if "bluedart" in combined or "blue dart" in combined:
             return "BlueDart"
     
     # Default to Pending if carrier not identified
@@ -308,6 +368,8 @@ async def shopify_order(request: Request):
                 igst = float(t["price"])
 
         original_rate_with_gst = price
+        # Extract HS code
+        hs_code = li.get("hs_code")
 
         # ✅ NEW: Extract item code and size from variant data
         item_code = li.get("sku") or li.get("id")  # Use SKU if available, else use product ID
@@ -426,9 +488,45 @@ async def shopify_fulfillment(request: Request):
             raise HTTPException(500, f"Failed to fetch order from Shopify: {response.text}")
         
         order = response.json()["order"]
+
+        print("==============================================")
+        print("SHOPIFY FULFILLMENT DEBUG")
+        print("ORDER NUMBER:", order.get("order_number"))
+        print("SHOPIFY ORDER ID:", order.get("id"))
+
+        for f in order.get("fulfillments") or []:
+            print("TRACKING NUMBER:", f.get("tracking_number"))
+            print("TRACKING COMPANY:", f.get("tracking_company"))
+            print("TRACKING URL:", f.get("tracking_url"))
+            print("FULFILLMENT STATUS:", f.get("status"))
+
+        print("TAGS:", order.get("tags"))
+        print("SHIPPING LINES:", order.get("shipping_lines"))
+        print("NOTE:", order.get("note"))
+        print("NOTE ATTRIBUTES:", order.get("note_attributes"))
+
+        print("==============================================")
         
         # Determine delivery channel from updated order
         delivery_channel = determine_delivery_channel(order)
+        # If Shopify order does not contain carrier,
+# try the fulfillment webhook payload itself
+        if delivery_channel == "Pending":
+            tracking_company = (
+                fulfillment.get("tracking_company") or ""
+            ).strip().lower()
+
+            if "dtdc" in tracking_company:
+                delivery_channel = "DTDC"
+
+            elif "delhivery" in tracking_company:
+                delivery_channel = "Delhivery"
+
+            elif (
+                "bluedart" in tracking_company
+                or "blue dart" in tracking_company
+            ):
+                delivery_channel = "BlueDart"
         order_type, against_order_id = determine_order_type(order)  # ✅ NEW: Check order type
         
         # Update database
@@ -502,12 +600,14 @@ async def sync_delivery_channels():
                     "delivery_channel": delivery_channel,
                     "type": order_type,
                     "against_order_id": against_order_id,  # ✅ NEW: Update against_order_id
+                    "notes": order.get("note") or "",
                     "raw_order": order
                 }) \
                 .eq("shopify_order_id", shopify_order_id) \
                 .execute()
-            
-            updated_count += 1
+            # Count only orders where a carrier was successfully identified
+            if delivery_channel != "Pending":
+                updated_count += 1
     
     return {
         "status": "sync_complete",
