@@ -629,6 +629,21 @@ async def sync_delivery_channels():
                 continue
 
             order = response.json().get("order")
+            print("==============================================")
+            print("DELIVERY DEBUG")
+            print("ORDER NUMBER:", order.get("order_number"))
+            print("SHOPIFY ID:", order.get("id"))
+
+            for f in order.get("fulfillments") or []:
+                print("TRACKING NUMBER:", f.get("tracking_number"))
+                print("TRACKING COMPANY:", f.get("tracking_company"))
+                print("TRACKING URL:", f.get("tracking_url"))
+                print("STATUS:", f.get("status"))
+
+            print("TAGS:", order.get("tags"))
+            print("SHIPPING LINES:", order.get("shipping_lines"))
+            print("NOTE:", order.get("note"))
+            print("==============================================")
 
             if not order:
                 print("ERROR: Shopify response does not contain order")
