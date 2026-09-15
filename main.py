@@ -586,6 +586,7 @@ async def sync_delivery_channels():
         res = supabase.table("orders") \
             .select("id, shopify_order_id, order_number, delivery_channel") \
             .eq("delivery_channel", "Pending") \
+            .limit(50) \
             .execute()
 
         print("PENDING ORDERS FOUND:", len(res.data))
