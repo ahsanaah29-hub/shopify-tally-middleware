@@ -632,9 +632,9 @@ def shopify_install(shop: str):
 
 
 @app.get("/auth/callback")
-def shopify_callback(code: str, shop: str):
+def shopify_callback(code: str = "", shop: str = ""):
     if not code or not shop:
-        raise HTTPException(400, "Invalid OAuth response")
+        return HTMLResponse("<h3>Error: Missing 'code' or 'shop' parameter in callback</h3>", status_code=400)
 
     token_url = f"https://{shop}/admin/oauth/access_token"
     payload = {
@@ -642,19 +642,40 @@ def shopify_callback(code: str, shop: str):
         "client_secret": SHOPIFY_API_SECRET,
         "code": code
     }
-    response = requests.post(token_url, json=payload)
+    
+    try:
+        response = requests.post(token_url, json=payload, timeout=30)
+    except Exception as net_err:
+        return HTMLResponse(f"<h3>Network error connecting to Shopify: {str(net_err)}</h3>", status_code=500)
+
     if response.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Token exchange failed: {response.text}")
+        return HTMLResponse(f"""
+        <div style="font-family: Arial; padding: 40px; max-width: 600px; margin: auto;">
+            <h2 style="color: red;">❌ Token Exchange Failed</h2>
+            <p><strong>Status:</strong> {response.status_code}</p>
+            <p><strong>Shopify Response:</strong></p>
+            <pre style="background: #fee; padding: 15px; border-radius: 5px;">{response.text}</pre>
+            <p>Please ensure <code>SHOPIFY_API_KEY</code> and <code>SHOPIFY_API_SECRET</code> on Render match your Shopify Partner app credentials.</p>
+        </div>
+        """, status_code=500)
 
-    data = response.json()
-    access_token = data.get("access_token")
+    try:
+        data = response.json()
+        access_token = data.get("access_token")
+    except Exception:
+        access_token = None
 
-    if access_token:
+    if not access_token:
+        return HTMLResponse(f"<h3>Error: No access_token returned by Shopify: {response.text}</h3>", status_code=500)
+
+    try:
         supabase.table("shopify_tokens").upsert({
             "shop": shop,
             "access_token": access_token,
             "created_at": "now()"
         }, on_conflict="shop").execute()
+    except Exception as db_err:
+        print(f"Could not save token to DB (non-fatal): {db_err}")
 
     return HTMLResponse(f"""
     <!DOCTYPE html>
