@@ -370,7 +370,7 @@ async def shopify_order(request: Request):
             "item_size": item_size,  # ✅ NEW: Size (XL, M, etc.)
             "quantity": qty,
             "variant_id": li.get("variant_id"),
-            "hs_code": hs_code,
+            "hs_code": li.get("hs_code"),
             "rate": round(original_rate_with_gst, 2),
             "amount": amount_with_gst,
             "amount_ex_gst": amount_ex_gst,
