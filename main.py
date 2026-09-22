@@ -517,14 +517,10 @@ def determine_delivery_channel(order):
     return "Pending"
 
 
-
-
 # =================================================
 # Shopify → Middleware
 # Webhook → Supabase
 # =================================================
-
-
 
 @app.post("/shopify/order")
 async def shopify_order(request: Request):
@@ -860,7 +856,7 @@ async def shopify_order(request: Request):
 
         hs_code = li.get(
             "hs_code"
-        )
+        ) or li.get("tax_code") or None
 
         # -------------------------------------------------
         # Extract item code and size
@@ -1342,6 +1338,95 @@ async def shopify_fulfillment(
             "status": "error",
             "message": str(e)
         }
+
+
+# =================================================
+# Sync Missing Shopify Orders Endpoint
+# =================================================
+
+@app.post("/sync/missing-orders")
+async def sync_missing_orders():
+    """
+    Fetch all Shopify orders from last 5 days and sync them to Supabase.
+    """
+    try:
+        if not SHOPIFY_STORE:
+            raise HTTPException(500, "SHOPIFY_STORE_NAME is missing")
+        if not SHOPIFY_TOKEN:
+            raise HTTPException(500, "SHOPIFY_ACCESS_TOKEN is missing")
+
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        from_date = now - timedelta(days=5)
+
+        created_at_min = from_date.isoformat()
+        created_at_max = now.isoformat()
+
+        headers = {
+            "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+            "Content-Type": "application/json"
+        }
+
+        all_orders = []
+        since_id = None
+
+        while True:
+            url = f"https://{SHOPIFY_STORE}.myshopify.com/admin/api/{SHOPIFY_API_VERSION}/orders.json"
+            params = {
+                "status": "any",
+                "limit": 250,
+                "created_at_min": created_at_min,
+                "created_at_max": created_at_max,
+                "order": "id asc"
+            }
+            if since_id:
+                params["since_id"] = since_id
+
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            if response.status_code != 200:
+                raise HTTPException(500, f"Failed to fetch Shopify orders: {response.text}")
+
+            data = response.json()
+            orders = data.get("orders") or []
+            if not orders:
+                break
+
+            all_orders.extend(orders)
+            if len(orders) < 250:
+                break
+
+            last_id = orders[-1].get("id")
+            if not last_id or since_id == last_id:
+                break
+            since_id = last_id
+
+        synced_count = 0
+        failed_count = 0
+
+        for order in all_orders:
+            order_number = order.get("order_number")
+            try:
+                webhook_url = "https://shopify-tally-middleware.onrender.com/shopify/order"
+                process_response = requests.post(webhook_url, json=order, headers={"Content-Type": "application/json"}, timeout=60)
+                if process_response.status_code == 200:
+                    synced_count += 1
+                else:
+                    failed_count += 1
+            except Exception:
+                failed_count += 1
+
+        return {
+            "status": "sync_complete",
+            "days": 5,
+            "total_orders_found": len(all_orders),
+            "synced_orders": synced_count,
+            "failed_orders": failed_count
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # =================================================
