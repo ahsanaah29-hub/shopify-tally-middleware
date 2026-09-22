@@ -389,7 +389,243 @@ async def shopify_order(request: Request):
         "order_number": order.get("order_number")
     }
 
+# =================================================
+# Sync Missing Shopify Orders
+# =================================================
 
+@app.post("/sync/missing-orders")
+async def sync_missing_orders():
+
+    try:
+
+        if not SHOPIFY_STORE:
+            raise HTTPException(
+                500,
+                "SHOPIFY_STORE_NAME is missing"
+            )
+
+        if not SHOPIFY_TOKEN:
+            raise HTTPException(
+                500,
+                "SHOPIFY_ACCESS_TOKEN is missing"
+            )
+
+        from datetime import datetime, timedelta, timezone
+
+        # Last 5 days
+        now = datetime.now(timezone.utc)
+
+        from_date = now - timedelta(days=5)
+
+        created_at_min = from_date.isoformat()
+        created_at_max = now.isoformat()
+
+        print("==============================================")
+        print("MISSING ORDER SYNC STARTED")
+        print("FROM:", created_at_min)
+        print("TO:", created_at_max)
+        print("SHOPIFY STORE:", SHOPIFY_STORE)
+        print("API VERSION:", SHOPIFY_API_VERSION)
+        print("==============================================")
+
+        headers = {
+            "X-Shopify-Access-Token": SHOPIFY_TOKEN,
+            "Content-Type": "application/json"
+        }
+
+        all_orders = []
+
+        since_id = None
+
+        while True:
+
+            url = (
+                f"https://{SHOPIFY_STORE}.myshopify.com"
+                f"/admin/api/{SHOPIFY_API_VERSION}"
+                f"/orders.json"
+            )
+
+            params = {
+                "status": "any",
+                "limit": 250,
+                "created_at_min": created_at_min,
+                "created_at_max": created_at_max,
+                "order": "id asc"
+            }
+
+            if since_id:
+                params["since_id"] = since_id
+
+            response = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=30
+            )
+
+            print(
+                "SHOPIFY ORDERS RESPONSE:",
+                response.status_code
+            )
+
+            if response.status_code != 200:
+
+                print(
+                    "SHOPIFY ERROR:",
+                    response.text
+                )
+
+                raise HTTPException(
+                    500,
+                    "Failed to fetch Shopify orders: "
+                    + response.text
+                )
+
+            data = response.json()
+
+            orders = data.get("orders") or []
+
+            print(
+                "ORDERS RECEIVED:",
+                len(orders)
+            )
+
+            if not orders:
+                break
+
+            all_orders.extend(orders)
+
+            if len(orders) < 250:
+                break
+
+            last_id = orders[-1].get("id")
+
+            if not last_id:
+                break
+
+            if since_id == last_id:
+                break
+
+            since_id = last_id
+
+        print("==============================================")
+        print(
+            "TOTAL SHOPIFY ORDERS FOUND:",
+            len(all_orders)
+        )
+        print("==============================================")
+
+        synced_count = 0
+        failed_count = 0
+
+        for order in all_orders:
+
+            order_number = order.get(
+                "order_number"
+            )
+
+            shopify_order_id = order.get(
+                "id"
+            )
+
+            print("----------------------------------------------")
+            print(
+                "SYNCING ORDER:",
+                order_number
+            )
+            print(
+                "SHOPIFY ID:",
+                shopify_order_id
+            )
+
+            try:
+
+                # Send order through the existing
+                # Shopify webhook processing logic.
+                webhook_url = (
+                    "https://shopify-tally-middleware.onrender.com"
+                    "/shopify/order"
+                )
+
+                process_response = requests.post(
+                    webhook_url,
+                    json=order,
+                    headers={
+                        "Content-Type":
+                            "application/json"
+                    },
+                    timeout=60
+                )
+
+                print(
+                    "ORDER PROCESS RESPONSE:",
+                    process_response.status_code
+                )
+
+                if process_response.status_code == 200:
+
+                    synced_count += 1
+
+                    print(
+                        "✅ SYNCED:",
+                        order_number
+                    )
+
+                else:
+
+                    failed_count += 1
+
+                    print(
+                        "❌ FAILED:",
+                        order_number
+                    )
+
+                    print(
+                        process_response.text
+                    )
+
+            except Exception as order_error:
+
+                failed_count += 1
+
+                print(
+                    "❌ ORDER ERROR:",
+                    order_number
+                )
+
+                print(
+                    str(order_error)
+                )
+
+        print("==============================================")
+        print("MISSING ORDER SYNC COMPLETED")
+        print("TOTAL FOUND:", len(all_orders))
+        print("SYNCED:", synced_count)
+        print("FAILED:", failed_count)
+        print("==============================================")
+
+        return {
+            "status": "sync_complete",
+            "days": 5,
+            "total_orders_found": len(all_orders),
+            "synced_orders": synced_count,
+            "failed_orders": failed_count
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        print("==============================================")
+        print("❌ MISSING ORDER SYNC ERROR")
+        print(str(e))
+        print("==============================================")
+
+        raise HTTPException(
+            500,
+            str(e)
+        )
 # -------------------------------------------------
 # NEW: Update Delivery Channel (Call this webhook for fulfillments)
 # -------------------------------------------------
