@@ -200,17 +200,22 @@ def save_shopify_order(order: dict):
     order_type, against_order_id = determine_order_type(order)
 
     # Check existing order to preserve carrier if already resolved
-    existing_order = (
-        supabase.table("orders")
-        .select("id, delivery_channel")
-        .eq("shopify_order_id", order.get("id"))
-        .maybe_single()
-        .execute()
-    )
-    if existing_order.data:
-        existing_channel = existing_order.data.get("delivery_channel")
-        if delivery_channel == "Pending" and existing_channel and existing_channel != "Pending":
-            delivery_channel = existing_channel
+    existing_channel = None
+    try:
+        existing_res = (
+            supabase.table("orders")
+            .select("id, delivery_channel")
+            .eq("shopify_order_id", order.get("id"))
+            .limit(1)
+            .execute()
+        )
+        if existing_res and getattr(existing_res, "data", None) and len(existing_res.data) > 0:
+            existing_channel = existing_res.data[0].get("delivery_channel")
+    except Exception as fetch_err:
+        print(f"Error checking existing order: {fetch_err}")
+
+    if delivery_channel == "Pending" and existing_channel and existing_channel != "Pending":
+        delivery_channel = existing_channel
 
     voucher_date = get_voucher_date_ist(order.get("created_at"))
 
@@ -238,10 +243,18 @@ def save_shopify_order(order: dict):
         on_conflict="shopify_order_id"
     ).execute()
 
-    order_id = res.data[0]["id"]
+    order_id = None
+    if res and getattr(res, "data", None) and len(res.data) > 0:
+        order_id = res.data[0].get("id")
+    
+    if not order_id:
+        fetch_order = supabase.table("orders").select("id").eq("shopify_order_id", order.get("id")).limit(1).execute()
+        if fetch_order and getattr(fetch_order, "data", None) and len(fetch_order.data) > 0:
+            order_id = fetch_order.data[0].get("id")
 
     # Delete existing items and recreate
-    supabase.table("order_items").delete().eq("order_id", order_id).execute()
+    if order_id:
+        supabase.table("order_items").delete().eq("order_id", order_id).execute()
 
     for li in order.get("line_items", []):
         qty = li.get("quantity", 0)
@@ -305,23 +318,24 @@ def save_shopify_order(order: dict):
             sum(float(t.get("rate", 0)) * 100 for t in tax_lines), 2
         ) if amount_ex_gst > 0 else 0
 
-        supabase.table("order_items").insert({
-            "order_id": order_id,
-            "item_name": li.get("title"),
-            "item_code": item_code,
-            "item_size": item_size,
-            "quantity": qty,
-            "variant_id": li.get("variant_id"),
-            "hs_code": hs_code,
-            "rate": round(price, 2),
-            "amount": amount_with_gst,
-            "amount_ex_gst": amount_ex_gst,
-            "cgst": cgst,
-            "sgst": sgst,
-            "igst": igst,
-            "gst_percentage": gst_percentage,
-            "item_discount": round(discount, 2)
-        }).execute()
+        if order_id:
+            supabase.table("order_items").insert({
+                "order_id": order_id,
+                "item_name": li.get("title"),
+                "item_code": item_code,
+                "item_size": item_size,
+                "quantity": qty,
+                "variant_id": li.get("variant_id"),
+                "hs_code": hs_code,
+                "rate": round(price, 2),
+                "amount": amount_with_gst,
+                "amount_ex_gst": amount_ex_gst,
+                "cgst": cgst,
+                "sgst": sgst,
+                "igst": igst,
+                "gst_percentage": gst_percentage,
+                "item_discount": round(discount, 2)
+            }).execute()
 
     return {
         "status": "stored",
